@@ -1,0 +1,386 @@
+import { useState, useRef, useCallback } from "react";
+import {
+  initLlama,
+  LlamaContext,
+  convertJsonSchemaToGrammar,
+} from "llama.rn";
+import { Directory, File, Paths } from "expo-file-system";
+
+// Model definitions
+export const LLAMA_MODELS = [
+  {
+    id: "gemma-3-270m",
+    label: "Gemma 3 (270M)",
+    description: "Compact, efficient model for on-device inference",
+    size: "270M",
+    url: "https://huggingface.co/ggml-org/gemma-3-270m-GGUF/resolve/main/gemma-3-270m-Q8_0.gguf?download=true",
+  },
+];
+
+// Chat message type
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+// Model file info
+interface ModelFileInfo {
+  path: string;
+  size: number;
+}
+
+// Directory name for llama models
+const LLAMA_DIRECTORY_NAME = "llama-models";
+
+export function useLlamaModels() {
+  // Context reference
+  const contextRef = useRef<LlamaContext | null>(null);
+
+  // State
+  const [isInitializingModel, setIsInitializingModel] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [currentModelId, setCurrentModelId] = useState<string | null>(null);
+  const [modelFiles, setModelFiles] = useState<Record<string, ModelFileInfo>>(
+    {}
+  );
+  const [llamaError, setLlamaError] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<
+    Record<string, number>
+  >({});
+
+  // Get model directory
+  const getModelDirectory = useCallback(async (): Promise<Directory> => {
+    const directory = new Directory(Paths.document, LLAMA_DIRECTORY_NAME);
+    if (!directory.exists) {
+      directory.create({ intermediates: true });
+    }
+    return directory;
+  }, []);
+
+  // Refresh model files list
+  const refreshModelFiles = useCallback(async () => {
+    try {
+      const modelDir = await getModelDirectory();
+      const files: Record<string, ModelFileInfo> = {};
+
+      for (const model of LLAMA_MODELS) {
+        const modelFile = new File(modelDir, `${model.id}.gguf`);
+        if (modelFile.exists) {
+          const size = modelFile.size ?? 0;
+          files[model.id] = {
+            path: modelFile.uri,
+            size: size,
+          };
+        }
+      }
+
+      setModelFiles(files);
+      return files;
+    } catch (error) {
+      console.error("Error refreshing model files:", error);
+      return {};
+    }
+  }, [getModelDirectory]);
+
+  // Download a model
+  const downloadModel = useCallback(
+    async (modelId: string): Promise<boolean> => {
+      const model = LLAMA_MODELS.find((m) => m.id === modelId);
+      if (!model) {
+        console.error("Model not found:", modelId);
+        return false;
+      }
+
+      try {
+        setIsDownloading(true);
+        setDownloadProgress({ [modelId]: 0 });
+        setLlamaError(null);
+
+        const modelDir = await getModelDirectory();
+        const modelFile = new File(modelDir, `${modelId}.gguf`);
+
+        console.log("Downloading model from:", model.url);
+        console.log("Target path:", modelFile.uri);
+
+        await File.downloadFileAsync(model.url, modelFile, {
+          onProgress: (event) => {
+            const progress =
+              event.totalBytesWritten / event.totalBytesExpectedToWrite;
+            setDownloadProgress({ [modelId]: progress });
+            console.log(`Download progress: ${(progress * 100).toFixed(1)}%`);
+          },
+        });
+
+        console.log("Model download complete");
+        await refreshModelFiles();
+        return true;
+      } catch (error) {
+        console.error("Download error:", error);
+        setLlamaError(`Download failed: ${error}`);
+        return false;
+      } finally {
+        setIsDownloading(false);
+      }
+    },
+    [getModelDirectory, refreshModelFiles]
+  );
+
+  // Initialize a model
+  const initializeLlamaModel = useCallback(
+    async (modelId: string): Promise<boolean> => {
+      const model = LLAMA_MODELS.find((m) => m.id === modelId);
+      if (!model) {
+        console.error("Model not found:", modelId);
+        return false;
+      }
+
+      try {
+        setIsInitializingModel(true);
+        setLlamaError(null);
+
+        // Check if model file exists
+        const currentFiles = await refreshModelFiles();
+        if (!currentFiles[modelId]) {
+          console.log("Model not found locally, downloading...");
+          const downloaded = await downloadModel(modelId);
+          if (!downloaded) {
+            return false;
+          }
+        }
+
+        // Get model path
+        const modelDir = await getModelDirectory();
+        const modelFile = new File(modelDir, `${modelId}.gguf`);
+
+        if (!modelFile.exists) {
+          setLlamaError("Model file not found after download");
+          return false;
+        }
+
+        console.log("Initializing Llama model from:", modelFile.uri);
+
+        // Release existing context if any
+        if (contextRef.current) {
+          try {
+            await contextRef.current.release();
+          } catch (e) {
+            console.warn("Error releasing previous context:", e);
+          }
+        }
+
+        // Initialize new context
+        const context = await initLlama({
+          model: modelFile.uri,
+          n_ctx: 2048,
+          n_batch: 512,
+          n_threads: 4,
+          use_mlock: true,
+          use_mmap: true,
+        });
+
+        contextRef.current = context;
+        setCurrentModelId(modelId);
+
+        console.log("Llama model initialized successfully");
+        return true;
+      } catch (error) {
+        console.error("Error initializing model:", error);
+        setLlamaError(`Failed to initialize model: ${error}`);
+        return false;
+      } finally {
+        setIsInitializingModel(false);
+      }
+    },
+    [downloadModel, getModelDirectory, refreshModelFiles]
+  );
+
+  // Release context
+  const releaseContext = useCallback(async () => {
+    try {
+      if (contextRef.current) {
+        await contextRef.current.release();
+        contextRef.current = null;
+      }
+      setCurrentModelId(null);
+    } catch (error) {
+      console.error("Error releasing context:", error);
+    }
+  }, []);
+
+  // Delete a model
+  const deleteModel = useCallback(
+    async (modelId: string): Promise<boolean> => {
+      try {
+        // Release context if this is the current model
+        if (currentModelId === modelId) {
+          await releaseContext();
+        }
+
+        const modelDir = await getModelDirectory();
+        const modelFile = new File(modelDir, `${modelId}.gguf`);
+
+        if (modelFile.exists) {
+          modelFile.delete();
+          console.log("Model deleted:", modelId);
+        }
+
+        await refreshModelFiles();
+        return true;
+      } catch (error) {
+        console.error("Error deleting model:", error);
+        return false;
+      }
+    },
+    [currentModelId, getModelDirectory, refreshModelFiles, releaseContext]
+  );
+
+  // Format chat messages for the model
+  const formatMessages = useCallback((messages: ChatMessage[]): string => {
+    let prompt = "";
+
+    for (const message of messages) {
+      switch (message.role) {
+        case "system":
+          prompt += `<start_of_turn>user\nSystem: ${message.content}<end_of_turn>\n`;
+          break;
+        case "user":
+          prompt += `<start_of_turn>user\n${message.content}<end_of_turn>\n`;
+          break;
+        case "assistant":
+          prompt += `<start_of_turn>model\n${message.content}<end_of_turn>\n`;
+          break;
+      }
+    }
+
+    // Add the start of the assistant response
+    prompt += "<start_of_turn>model\n";
+
+    return prompt;
+  }, []);
+
+  // Run completion
+  const completion = useCallback(
+    async (
+      messages: ChatMessage[],
+      onToken?: (token: string) => void
+    ): Promise<string> => {
+      if (!contextRef.current) {
+        throw new Error("Llama context not initialized");
+      }
+
+      setIsGenerating(true);
+
+      try {
+        const prompt = formatMessages(messages);
+        console.log("Running completion with prompt length:", prompt.length);
+
+        let fullResponse = "";
+        const stopTokens = ["<end_of_turn>", "<start_of_turn>", "<eos>"];
+
+        const result = await contextRef.current.completion(
+          {
+            prompt,
+            n_predict: 512,
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 40,
+            repeat_penalty: 1.1,
+            stop: stopTokens,
+          },
+          (data) => {
+            const token = data.token;
+
+            // Check if we've hit a stop token
+            for (const stopToken of stopTokens) {
+              if (fullResponse.includes(stopToken)) {
+                return true; // Signal to stop
+              }
+            }
+
+            fullResponse += token;
+            if (onToken) {
+              onToken(token);
+            }
+            return false;
+          }
+        );
+
+        console.log("Completion result:", {
+          tokens: result.tokens_predicted,
+          time: result.timings?.total_ms,
+        });
+
+        // Clean up response - remove any stop tokens that might have slipped through
+        let cleanedResponse = fullResponse;
+        for (const stopToken of stopTokens) {
+          cleanedResponse = cleanedResponse.split(stopToken)[0];
+        }
+
+        return cleanedResponse.trim();
+      } finally {
+        setIsGenerating(false);
+      }
+    },
+    [formatMessages]
+  );
+
+  // Get current model info
+  const getCurrentModel = useCallback(() => {
+    return LLAMA_MODELS.find((m) => m.id === currentModelId) || null;
+  }, [currentModelId]);
+
+  // Get model by ID
+  const getModelById = useCallback((modelId: string) => {
+    return LLAMA_MODELS.find((m) => m.id === modelId) || null;
+  }, []);
+
+  // Get download progress
+  const getDownloadProgress = useCallback(
+    (modelId: string) => {
+      return downloadProgress[modelId] ?? null;
+    },
+    [downloadProgress]
+  );
+
+  // Get llama context (for advanced usage)
+  const getLlamaContext = useCallback(() => {
+    return contextRef.current;
+  }, []);
+
+  // Check if ready
+  const isReady = useCallback(() => {
+    return contextRef.current !== null;
+  }, []);
+
+  return {
+    // State
+    llamaContext: contextRef.current,
+    isInitializingModel,
+    isDownloading,
+    isGenerating,
+    currentModelId,
+    modelFiles,
+    llamaError,
+    downloadProgress,
+
+    // Actions
+    initializeLlamaModel,
+    downloadModel,
+    releaseContext,
+    deleteModel,
+    completion,
+
+    // Helpers
+    getCurrentModel,
+    getModelById,
+    getDownloadProgress,
+    getLlamaContext,
+    isReady,
+    refreshModelFiles,
+    getModelDirectory,
+  };
+}
+
+// Export model type for external use
+export type { ModelFileInfo };
