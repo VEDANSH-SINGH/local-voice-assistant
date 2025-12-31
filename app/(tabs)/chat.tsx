@@ -11,9 +11,10 @@ import {
   Platform,
   ActivityIndicator,
   Alert,
+  Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useLlamaModels, ChatMessage } from "@/hooks/useLlamaModels";
+import { useLlamaModels, ChatMessage, LLAMA_MODELS } from "@/hooks/useLlamaModels";
 
 const ACCENT_COLOR = "#10B981"; // Emerald green for chat
 
@@ -22,6 +23,8 @@ export default function ChatScreen() {
   const [inputText, setInputText] = useState("");
   const [streamingText, setStreamingText] = useState("");
   const [error, setError] = useState<string>("");
+  const [showModelManager, setShowModelManager] = useState(false);
+  const [isDeletingModelId, setIsDeletingModelId] = useState<string | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
 
   const {
@@ -37,7 +40,10 @@ export default function ChatScreen() {
     completion,
     getCurrentModel,
     getDownloadProgress,
+    getModelById,
     deleteModel,
+    isModelValid,
+    availableModels,
   } = useLlamaModels();
 
   useEffect(() => {
@@ -47,14 +53,60 @@ export default function ChatScreen() {
     }
   }, []);
 
-  const initializeModel = async () => {
+  const initializeModel = async (modelId: string = "gemma-3-270m", forceRedownload: boolean = false) => {
     try {
       setError("");
-      await initializeLlamaModel("gemma-3-270m");
+      await initializeLlamaModel(modelId, { forceRedownload });
     } catch (err) {
       console.error("Failed to initialize model:", err);
       setError(`Failed to initialize model: ${err}`);
     }
+  };
+
+  const handleDeleteModel = (modelId: string) => {
+    if (isGenerating) {
+      Alert.alert("Busy", "Please wait for the current response to complete.");
+      return;
+    }
+
+    const model = getModelById(modelId);
+    const modelLabel = model?.label || modelId;
+
+    Alert.alert(
+      "Delete Model",
+      `Remove ${modelLabel} from this device? You can download it again later.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            setIsDeletingModelId(modelId);
+            try {
+              await deleteModel(modelId);
+            } catch (err) {
+              Alert.alert("Error", `Failed to delete model: ${err}`);
+            } finally {
+              setIsDeletingModelId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleRedownloadModel = (modelId: string) => {
+    Alert.alert(
+      "Re-download Model",
+      "This will delete the existing file and download a fresh copy. Continue?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Re-download",
+          onPress: () => initializeModel(modelId, true),
+        },
+      ]
+    );
   };
 
   const handleSend = async () => {
@@ -160,11 +212,12 @@ export default function ChatScreen() {
         <View style={styles.header}>
           <View style={styles.headerLeft}>
             <Text style={styles.title}>AI Chat</Text>
-            <View
+            <TouchableOpacity
               style={[
                 styles.statusBadge,
                 isReady ? styles.statusReady : styles.statusLoading,
               ]}
+              onPress={() => setShowModelManager(true)}
             >
               <Text
                 style={[
@@ -172,15 +225,20 @@ export default function ChatScreen() {
                   isReady ? styles.statusTextReady : styles.statusTextLoading,
                 ]}
               >
-                {modelStatusText}
+                {modelStatusText} ▾
               </Text>
-            </View>
-          </View>
-          {messages.length > 0 && (
-            <TouchableOpacity onPress={handleClearChat} style={styles.clearButton}>
-              <Text style={styles.clearButtonText}>Clear</Text>
             </TouchableOpacity>
-          )}
+          </View>
+          <View style={styles.headerRight}>
+            <TouchableOpacity onPress={() => setShowModelManager(true)} style={styles.modelsButton}>
+              <Text style={styles.modelsButtonText}>Models</Text>
+            </TouchableOpacity>
+            {messages.length > 0 && (
+              <TouchableOpacity onPress={handleClearChat} style={styles.clearButton}>
+                <Text style={styles.clearButtonText}>Clear</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         {/* Error Banner */}
@@ -308,14 +366,190 @@ export default function ChatScreen() {
         </View>
 
         {/* Model Info Footer */}
-        {modelFiles["gemma-3-270m"] && (
+        {currentModelId && modelFiles[currentModelId] && (
           <View style={styles.modelInfo}>
             <Text style={styles.modelInfoText}>
-              Model: {formatBytes(modelFiles["gemma-3-270m"].size)} on device
+              Model: {formatBytes(modelFiles[currentModelId].size)} on device
             </Text>
           </View>
         )}
       </KeyboardAvoidingView>
+
+      {/* Model Manager Modal */}
+      <Modal
+        visible={showModelManager}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowModelManager(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Model Manager</Text>
+            <TouchableOpacity
+              onPress={() => setShowModelManager(false)}
+              style={styles.modalCloseButton}
+            >
+              <Text style={styles.modalCloseText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.modalContent}>
+            <Text style={styles.modalSectionTitle}>Available Models</Text>
+            <Text style={styles.modalDescription}>
+              Select a model to use for chat. Larger models provide better responses but require more storage and RAM.
+            </Text>
+
+            {availableModels.map((model) => {
+              const fileInfo = modelFiles[model.id];
+              const isDownloaded = !!fileInfo;
+              const isValid = fileInfo?.isValid ?? false;
+              const isActive = currentModelId === model.id;
+              const isDeleting = isDeletingModelId === model.id;
+              const progress = getDownloadProgress(model.id);
+              const isCurrentlyDownloading = isDownloading && progress !== null && progress < 1;
+
+              return (
+                <View
+                  key={model.id}
+                  style={[
+                    styles.modelCard,
+                    isActive && styles.modelCardActive,
+                    !isValid && isDownloaded && styles.modelCardCorrupt,
+                  ]}
+                >
+                  <View style={styles.modelCardHeader}>
+                    <View style={styles.modelCardInfo}>
+                      <Text style={styles.modelCardTitle}>{model.label}</Text>
+                      <Text style={styles.modelCardSize}>{model.size}</Text>
+                    </View>
+                    {isActive && (
+                      <View style={styles.activeBadge}>
+                        <Text style={styles.activeBadgeText}>Active</Text>
+                      </View>
+                    )}
+                    {isDownloaded && !isValid && (
+                      <View style={styles.corruptBadge}>
+                        <Text style={styles.corruptBadgeText}>Corrupted</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <Text style={styles.modelCardDescription}>{model.description}</Text>
+
+                  {isDownloaded && (
+                    <Text style={styles.modelCardFileSize}>
+                      {formatBytes(fileInfo.size)} on device
+                      {!isValid && " (incomplete or corrupted)"}
+                    </Text>
+                  )}
+
+                  {/* Download Progress */}
+                  {isCurrentlyDownloading && (
+                    <View style={styles.downloadProgressContainer}>
+                      <View style={styles.downloadProgressBar}>
+                        <View
+                          style={[
+                            styles.downloadProgressFill,
+                            { width: `${(progress || 0) * 100}%` },
+                          ]}
+                        />
+                      </View>
+                      <Text style={styles.downloadProgressText}>
+                        Downloading... {((progress || 0) * 100).toFixed(0)}%
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Action Buttons */}
+                  <View style={styles.modelCardActions}>
+                    {!isDownloaded ? (
+                      <TouchableOpacity
+                        style={[
+                          styles.modelActionButton,
+                          styles.downloadButton,
+                          (isDownloading || isInitializingModel) && styles.buttonDisabled,
+                        ]}
+                        onPress={() => initializeModel(model.id)}
+                        disabled={isDownloading || isInitializingModel}
+                      >
+                        {isCurrentlyDownloading ? (
+                          <ActivityIndicator size="small" color="#fff" />
+                        ) : (
+                          <Text style={styles.downloadButtonText}>Download & Use</Text>
+                        )}
+                      </TouchableOpacity>
+                    ) : (
+                      <>
+                        {!isActive && isValid && (
+                          <TouchableOpacity
+                            style={[
+                              styles.modelActionButton,
+                              styles.useButton,
+                              (isDownloading || isInitializingModel) && styles.buttonDisabled,
+                            ]}
+                            onPress={() => initializeModel(model.id)}
+                            disabled={isDownloading || isInitializingModel}
+                          >
+                            {isInitializingModel && currentModelId !== model.id ? (
+                              <ActivityIndicator size="small" color="#fff" />
+                            ) : (
+                              <Text style={styles.useButtonText}>Use Model</Text>
+                            )}
+                          </TouchableOpacity>
+                        )}
+
+                        {(!isValid || isActive) && (
+                          <TouchableOpacity
+                            style={[
+                              styles.modelActionButton,
+                              styles.redownloadButton,
+                              (isDownloading || isInitializingModel) && styles.buttonDisabled,
+                            ]}
+                            onPress={() => handleRedownloadModel(model.id)}
+                            disabled={isDownloading || isInitializingModel}
+                          >
+                            <Text style={styles.redownloadButtonText}>
+                              {!isValid ? "Fix & Re-download" : "Re-download"}
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+
+                        <TouchableOpacity
+                          style={[
+                            styles.modelActionButton,
+                            styles.deleteButton,
+                            isDeleting && styles.buttonDisabled,
+                          ]}
+                          onPress={() => handleDeleteModel(model.id)}
+                          disabled={isDeleting || isDownloading}
+                        >
+                          <Text style={styles.deleteButtonText}>
+                            {isDeleting ? "Deleting..." : "Delete"}
+                          </Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+                  </View>
+                </View>
+              );
+            })}
+
+            {/* Error Display */}
+            {llamaError && (
+              <View style={styles.errorCard}>
+                <Text style={styles.errorCardTitle}>Error</Text>
+                <Text style={styles.errorCardText}>{llamaError}</Text>
+              </View>
+            )}
+
+            <View style={styles.modalFooter}>
+              <Text style={styles.modalFooterText}>
+                Models are stored locally on your device. You can delete them to free up space.
+              </Text>
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -368,6 +602,22 @@ const styles = StyleSheet.create({
   },
   statusTextLoading: {
     color: "#92400E",
+  },
+  headerRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  modelsButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: "#F3F4F6",
+    borderRadius: 8,
+  },
+  modelsButtonText: {
+    color: ACCENT_COLOR,
+    fontSize: 13,
+    fontWeight: "600",
   },
   clearButton: {
     paddingHorizontal: 12,
@@ -538,5 +788,217 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "#9CA3AF",
     textAlign: "center",
+  },
+  // Modal styles
+  modalContainer: {
+    flex: 1,
+    backgroundColor: "#F9FAFB",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    backgroundColor: "#ffffff",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E7EB",
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  modalCloseButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  modalCloseText: {
+    color: ACCENT_COLOR,
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  modalContent: {
+    flex: 1,
+    padding: 16,
+  },
+  modalSectionTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#111827",
+    marginBottom: 8,
+  },
+  modalDescription: {
+    fontSize: 14,
+    color: "#6B7280",
+    lineHeight: 20,
+    marginBottom: 20,
+  },
+  modelCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: "#E5E7EB",
+  },
+  modelCardActive: {
+    borderColor: ACCENT_COLOR,
+    backgroundColor: "#F0FDF4",
+  },
+  modelCardCorrupt: {
+    borderColor: "#EF4444",
+    backgroundColor: "#FEF2F2",
+  },
+  modelCardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginBottom: 8,
+  },
+  modelCardInfo: {
+    flex: 1,
+  },
+  modelCardTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#111827",
+    marginBottom: 2,
+  },
+  modelCardSize: {
+    fontSize: 13,
+    color: "#6B7280",
+    fontWeight: "500",
+  },
+  activeBadge: {
+    backgroundColor: ACCENT_COLOR,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  activeBadgeText: {
+    color: "#ffffff",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  corruptBadge: {
+    backgroundColor: "#EF4444",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  corruptBadgeText: {
+    color: "#ffffff",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  modelCardDescription: {
+    fontSize: 13,
+    color: "#6B7280",
+    lineHeight: 18,
+    marginBottom: 8,
+  },
+  modelCardFileSize: {
+    fontSize: 12,
+    color: "#9CA3AF",
+    marginBottom: 12,
+  },
+  downloadProgressContainer: {
+    marginBottom: 12,
+  },
+  downloadProgressBar: {
+    height: 6,
+    backgroundColor: "#E5E7EB",
+    borderRadius: 3,
+    overflow: "hidden",
+    marginBottom: 6,
+  },
+  downloadProgressFill: {
+    height: "100%",
+    backgroundColor: ACCENT_COLOR,
+    borderRadius: 3,
+  },
+  downloadProgressText: {
+    fontSize: 12,
+    color: "#6B7280",
+    textAlign: "center",
+  },
+  modelCardActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  modelActionButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    minWidth: 80,
+    alignItems: "center",
+  },
+  downloadButton: {
+    backgroundColor: ACCENT_COLOR,
+    flex: 1,
+  },
+  downloadButtonText: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  useButton: {
+    backgroundColor: ACCENT_COLOR,
+    flex: 1,
+  },
+  useButtonText: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  redownloadButton: {
+    backgroundColor: "#F59E0B",
+  },
+  redownloadButtonText: {
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  deleteButton: {
+    backgroundColor: "#FEE2E2",
+  },
+  deleteButtonText: {
+    color: "#DC2626",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  buttonDisabled: {
+    opacity: 0.5,
+  },
+  errorCard: {
+    backgroundColor: "#FEF2F2",
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 16,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+  },
+  errorCardTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#991B1B",
+    marginBottom: 6,
+  },
+  errorCardText: {
+    fontSize: 13,
+    color: "#991B1B",
+    lineHeight: 18,
+  },
+  modalFooter: {
+    paddingVertical: 24,
+    paddingHorizontal: 8,
+  },
+  modalFooterText: {
+    fontSize: 12,
+    color: "#9CA3AF",
+    textAlign: "center",
+    lineHeight: 18,
   },
 });

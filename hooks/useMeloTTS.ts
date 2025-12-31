@@ -8,6 +8,7 @@
  * - tts_config.json
  */
 import { useState, useCallback, useEffect, useRef } from "react";
+import { Platform } from "react-native";
 import { Directory, File, Paths } from "expo-file-system";
 import {
   createDownloadResumable,
@@ -25,6 +26,15 @@ import { InferenceSession, Tensor } from "onnxruntime-react-native";
 
 // S3 URL for MeloTTS model files
 const MELO_TTS_MODELS_URL = "https://test-transcription-service-nxtwave.s3.ap-south-1.amazonaws.com/melo-tts-models.zip";
+
+// Helper to get formatted timestamp for logs
+const getTimestamp = () => {
+  const now = new Date();
+  return `[${now.toLocaleTimeString('en-US', { hour12: false })}.${now.getMilliseconds().toString().padStart(3, '0')}]`;
+};
+
+// Timestamped log helper
+const tLog = (...args: any[]) => console.log(getTimestamp(), ...args);
 
 export interface TTSModel {
   id: string;
@@ -56,22 +66,39 @@ interface ModelFileInfo {
 }
 
 // Available TTS models - you can add more models here
+// INT8 is fastest, FP16 is balanced, FP32 is highest quality but slowest
 export const TTS_MODELS: TTSModel[] = [
   {
     id: "melo-int8",
-    label: "MeloTTS INT8",
+    label: "MeloTTS INT8 (Fastest)",
     url: "", // Set to empty - user will provide local files
     filename: "model_int8.onnx",
     expectedSize: 41000000, // ~41MB
-    quality: "Fast, good quality",
+    quality: "Fastest - RTF ~1-2x",
+  },
+  {
+    id: "melo-fp16",
+    label: "MeloTTS FP16 (Balanced)",
+    url: "", // Set to empty - user will provide local files
+    filename: "model_fp16.onnx",
+    expectedSize: 82000000, // ~82MB
+    quality: "Balanced - RTF ~3-5x",
+  },
+  {
+    id: "melo-mixed",
+    label: "MeloTTS Mixed",
+    url: "", // Set to empty - user will provide local files
+    filename: "model_mixed.onnx",
+    expectedSize: 82000000, // ~82MB
+    quality: "Mixed precision",
   },
   {
     id: "melo-fp32",
-    label: "MeloTTS FP32",
+    label: "MeloTTS FP32 (Best Quality)",
     url: "", // Set to empty - user will provide local files
     filename: "model.onnx",
     expectedSize: 162000000, // ~162MB
-    quality: "Best quality",
+    quality: "Best quality - RTF ~5-10x",
   },
 ];
 
@@ -168,18 +195,24 @@ export function useMeloTTS() {
     try {
       setIsDownloading(true);
       setDownloadProgress({ models: 0 });
-      console.log("Starting MeloTTS models download from S3...");
+      tLog("Starting MeloTTS models download from S3...");
 
       const directory = await getModelDirectory();
       
-      // Check if model file already exists (not just config)
-      const int8Model = new File(directory, "model_int8.onnx");
-      const fp32Model = new File(directory, "model.onnx");
+      // Check if any model file already exists
+      const modelFiles = [
+        new File(directory, "model_int8.onnx"),
+        new File(directory, "model_fp16.onnx"),
+        new File(directory, "model_mixed.onnx"),
+        new File(directory, "model.onnx"),
+      ];
+      
       try {
-        const int8Info = int8Model.info();
-        const fp32Info = fp32Model.info();
-        if (int8Info.exists || fp32Info.exists) {
-          console.log("MeloTTS model file already exists, refreshing state...");
+        const hasAnyModel = modelFiles.some(f => {
+          try { return f.info().exists; } catch { return false; }
+        });
+        if (hasAnyModel) {
+          tLog("MeloTTS model file already exists, refreshing state...");
           await refreshModelFiles();
           setDownloadProgress({ models: 1 });
           return true;
@@ -251,7 +284,7 @@ export function useMeloTTS() {
       }
 
       const totalDownloadTime = ((Date.now() - downloadStartTimeRef.current) / 1000).toFixed(1);
-      console.log(`Download complete in ${totalDownloadTime}s, extracting...`);
+      tLog(`Download complete in ${totalDownloadTime}s, extracting...`);
       setDownloadSpeed(`Done in ${totalDownloadTime}s`);
       setDownloadProgress({ models: 0.85 });
 
@@ -261,7 +294,7 @@ export function useMeloTTS() {
       const parentDir = Paths.document.uri;
       await unzip(zipPath, parentDir);
 
-      console.log("Extraction complete!");
+      tLog("Extraction complete!");
       setDownloadProgress({ models: 1 });
 
       // Clean up zip file
@@ -284,17 +317,23 @@ export function useMeloTTS() {
         console.log("  (error listing)");
       }
 
-      // Verify extraction - check for model file
-      const int8ModelAfter = new File(directory, "model_int8.onnx");
-      const fp32ModelAfter = new File(directory, "model.onnx");
-      const int8Exists = int8ModelAfter.info().exists;
-      const fp32Exists = fp32ModelAfter.info().exists;
+      // Verify extraction - check for any model file
+      const modelFilesAfter = [
+        new File(directory, "model_int8.onnx"),
+        new File(directory, "model_fp16.onnx"),
+        new File(directory, "model_mixed.onnx"),
+        new File(directory, "model.onnx"),
+      ];
       
-      if (!int8Exists && !fp32Exists) {
-        throw new Error("Extraction verification failed - no model file found (expected model_int8.onnx or model.onnx)");
+      const hasAnyModelAfter = modelFilesAfter.some(f => {
+        try { return f.info().exists; } catch { return false; }
+      });
+      
+      if (!hasAnyModelAfter) {
+        throw new Error("Extraction verification failed - no model file found");
       }
       
-      console.log("Model files verified successfully");
+      tLog("Model files verified successfully");
       
       // Refresh the model files state
       await refreshModelFiles();
@@ -459,7 +498,7 @@ export function useMeloTTS() {
       try {
         setIsInitializingModel(true);
         setOnnxError(null);
-        console.log(`Initializing TTS model: ${model.label}`);
+        tLog(`Initializing TTS model: ${model.label}`);
 
         const directory = await getModelDirectory();
         
@@ -490,13 +529,42 @@ export function useMeloTTS() {
         const loadedConfig = await loadConfig(configFile.uri);
         setConfig(loadedConfig);
         
-        // Initialize ONNX session with file path (as per onnxruntime-react-native docs)
-        console.log("Creating ONNX inference session from path:", modelPath);
-        const session = await InferenceSession.create(modelPath);
+        // Initialize ONNX session with hardware acceleration
+        // - iOS: CoreML for Neural Engine acceleration
+        // - Android: NNAPI for NPU/GPU acceleration (Hexagon NPU on Snapdragon)
+        tLog("=== TTS ONNX Session Initialization ===");
+        tLog("Model path:", modelPath);
+        tLog("Platform:", Platform.OS);
+        
+        // Define execution providers based on platform
+        const executionProviders = Platform.OS === 'ios' 
+          ? ['coreml', 'xnnpack', 'cpu'] as const
+          : ['nnapi', 'xnnpack', 'cpu'] as const;
+        
+        tLog("Requested execution providers:", executionProviders);
+        tLog("Expected hardware acceleration:");
+        if (Platform.OS === 'ios') {
+          tLog("  - CoreML → Apple Neural Engine (ANE)");
+        } else {
+          tLog("  - NNAPI → Hexagon NPU (Snapdragon) / GPU");
+        }
+        
+        tLog("Creating ONNX session...");
+        const sessionStartTime = Date.now();
+        const session = await InferenceSession.create(modelPath, {
+          executionProviders: [...executionProviders],
+        });
+        const sessionLoadTime = Date.now() - sessionStartTime;
+        
         sessionRef.current = session;
         
+        tLog(`Session created in ${sessionLoadTime}ms`);
+        tLog("Session input names:", session.inputNames);
+        tLog("Session output names:", session.outputNames);
+        tLog("=== TTS Session Ready ===");
+        
         setCurrentModelId(modelId);
-        console.log(`TTS model initialized: ${model.label}`);
+        tLog(`TTS model initialized: ${model.label}`);
         
         return { session, tokens: loadedTokens, lexicon: loadedLexicon, config: loadedConfig };
       } catch (error) {
@@ -678,7 +746,7 @@ export function useMeloTTS() {
       throw new Error("No valid phonemes generated from text");
     }
     
-    console.log(`Synthesizing: "${text}" -> ${seqLen} tokens`);
+    tLog(`Synthesizing: "${text}" -> ${seqLen} tokens`);
     
     // Create input tensors using onnxruntime-react-native Tensor
     const feeds = {
@@ -710,9 +778,26 @@ export function useMeloTTS() {
     setLastInferenceTime(inferenceTimeMs);
     setLastAudioDuration(audioDurationSec);
     
-    console.log(`Inference completed in ${inferenceTimeMs}ms`);
-    console.log(`Audio duration: ${audioDurationSec.toFixed(2)}s`);
-    console.log(`Real-time factor (RTF): ${rtf.toFixed(3)} (${rtf < 1 ? 'faster' : 'slower'} than real-time)`);
+    // Log detailed performance info
+    tLog("=== TTS Inference Performance ===");
+    tLog(`Platform: ${Platform.OS}`);
+    tLog(`Expected accelerator: ${Platform.OS === 'ios' ? 'CoreML/ANE' : 'NNAPI/Hexagon NPU'}`);
+    tLog(`Input tokens: ${seqLen}`);
+    tLog(`Inference time: ${inferenceTimeMs}ms`);
+    tLog(`Audio duration: ${audioDurationSec.toFixed(2)}s (${audioData.length} samples)`);
+    tLog(`Real-time factor (RTF): ${rtf.toFixed(3)}`);
+    
+    // Performance interpretation
+    if (rtf < 0.5) {
+      tLog("✅ EXCELLENT - Hardware acceleration likely working (NPU/ANE)");
+    } else if (rtf < 1.0) {
+      tLog("✅ GOOD - Faster than real-time, may be using XNNPACK or partial NPU");
+    } else if (rtf < 2.0) {
+      tLog("⚠️ MODERATE - Likely using XNNPACK CPU optimization");
+    } else {
+      tLog("❌ SLOW - Likely falling back to basic CPU, NPU not engaged");
+    }
+    tLog("=================================");
     
     return {
       audio: audioData,
@@ -747,7 +832,7 @@ export function useMeloTTS() {
       // Write base64 data
       await writeAsStringAsync(outputPath, wavBase64, { encoding: EncodingType.Base64 });
       
-      console.log(`Audio saved to: ${outputPath}`);
+      tLog(`Audio saved to: ${outputPath}`);
       return outputPath;
     } finally {
       setIsSynthesizing(false);
@@ -767,7 +852,7 @@ export function useMeloTTS() {
       audioPlayerRef.current = player;
       
       player.play();
-      console.log("Audio playback started");
+      tLog("Audio playback started");
     } catch (error) {
       console.error("Audio playback error:", error);
       throw error;
@@ -779,7 +864,7 @@ export function useMeloTTS() {
       audioPlayerRef.current.pause();
       audioPlayerRef.current.remove();
       audioPlayerRef.current = null;
-      console.log("Audio playback stopped");
+      tLog("Audio playback stopped");
     }
   }, []);
 

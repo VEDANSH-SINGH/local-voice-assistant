@@ -73,11 +73,13 @@ export default function TTSScreen() {
       const currentModels = await refreshModelFiles();
       console.log("Available models:", Object.keys(currentModels));
       
-      // Try INT8 model first, then FP32
-      if (currentModels["melo-int8"]) {
-        await initializeModel("melo-int8");
-      } else if (currentModels["melo-fp32"]) {
+      // Use FP32 (RTF ~0.9)
+      if (currentModels["melo-fp32"]) {
+        console.log("Using TTS model: melo-fp32");
         await initializeModel("melo-fp32");
+      } else if (currentModels["melo-int8"]) {
+        console.log("Using TTS model: melo-int8 (FP32 not available)");
+        await initializeModel("melo-int8");
       } else {
         // Models not found - show download option
         setError("No TTS model found. Tap 'Download Models' to get started.");

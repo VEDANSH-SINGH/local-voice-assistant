@@ -242,9 +242,15 @@ export function useWhisperModels() {
         // Download model if not already available
         const modelPath = await downloadModel(model);
 
-        // Initialize Whisper context
+        // Initialize Whisper context with hardware acceleration
         const context = await initWhisper({
           filePath: modelPath,
+          // GPU acceleration (Metal on iOS - enabled by default)
+          useGpu: true,
+          // Use Core ML if available on iOS
+          useCoreMLIos: true,
+          // Flash Attention for better GPU utilization
+          useFlashAttn: true,
         });
 
         setWhisperContext(context);

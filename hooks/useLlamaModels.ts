@@ -1,19 +1,35 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import {
   initLlama,
   LlamaContext,
-  convertJsonSchemaToGrammar,
 } from "llama.rn";
 import { Directory, File, Paths } from "expo-file-system";
 
-// Model definitions
+// Model definitions with expected file sizes for validation
 export const LLAMA_MODELS = [
   {
     id: "gemma-3-270m",
-    label: "Gemma 3 (270M)",
-    description: "Compact, efficient model for on-device inference",
+    label: "Gemma 3 IT (270M)",
+    description: "Instruction-tuned, compact model for chat",
     size: "270M",
-    url: "https://huggingface.co/ggml-org/gemma-3-270m-GGUF/resolve/main/gemma-3-270m-Q8_0.gguf?download=true",
+    url: "https://huggingface.co/ggml-org/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q8_0.gguf?download=true",
+    expectedSizeBytes: 290000000, // ~290MB - minimum expected size for validation
+  },
+  {
+    id: "gemma-3-1b",
+    label: "Gemma 3 (1B)",
+    description: "Larger model with better quality responses",
+    size: "1B",
+    url: "https://huggingface.co/ggml-org/gemma-3-1b-GGUF/resolve/main/gemma-3-1b-Q4_K_M.gguf?download=true",
+    expectedSizeBytes: 750000000, // ~750MB
+  },
+  {
+    id: "qwen2-0.5b",
+    label: "Qwen2 (0.5B)",
+    description: "Fast, lightweight multilingual model",
+    size: "0.5B",
+    url: "https://huggingface.co/Qwen/Qwen2-0.5B-Instruct-GGUF/resolve/main/qwen2-0_5b-instruct-q4_k_m.gguf?download=true",
+    expectedSizeBytes: 350000000, // ~350MB
   },
 ];
 
@@ -27,6 +43,7 @@ export interface ChatMessage {
 interface ModelFileInfo {
   path: string;
   size: number;
+  isValid?: boolean;
 }
 
 // Directory name for llama models
@@ -58,6 +75,22 @@ export function useLlamaModels() {
     return directory;
   }, []);
 
+  // Validate model file (check if it's complete/not corrupted)
+  const validateModelFile = useCallback((modelId: string, fileSize: number): boolean => {
+    const model = LLAMA_MODELS.find((m) => m.id === modelId);
+    if (!model) return false;
+    
+    // Check if file size is at least 80% of expected (to account for compression variations)
+    const minExpectedSize = model.expectedSizeBytes * 0.8;
+    const isValid = fileSize >= minExpectedSize;
+    
+    if (!isValid) {
+      console.warn(`Model ${modelId} appears corrupted: ${fileSize} bytes (expected ~${model.expectedSizeBytes})`);
+    }
+    
+    return isValid;
+  }, []);
+
   // Refresh model files list
   const refreshModelFiles = useCallback(async () => {
     try {
@@ -68,9 +101,11 @@ export function useLlamaModels() {
         const modelFile = new File(modelDir, `${model.id}.gguf`);
         if (modelFile.exists) {
           const size = modelFile.size ?? 0;
+          const isValid = validateModelFile(model.id, size);
           files[model.id] = {
             path: modelFile.uri,
             size: size,
+            isValid: isValid,
           };
         }
       }
@@ -81,11 +116,11 @@ export function useLlamaModels() {
       console.error("Error refreshing model files:", error);
       return {};
     }
-  }, [getModelDirectory]);
+  }, [getModelDirectory, validateModelFile]);
 
-  // Download a model
+  // Download a model (with optional force re-download)
   const downloadModel = useCallback(
-    async (modelId: string): Promise<boolean> => {
+    async (modelId: string, options?: { force?: boolean }): Promise<boolean> => {
       const model = LLAMA_MODELS.find((m) => m.id === modelId);
       if (!model) {
         console.error("Model not found:", modelId);
@@ -100,6 +135,25 @@ export function useLlamaModels() {
         const modelDir = await getModelDirectory();
         const modelFile = new File(modelDir, `${modelId}.gguf`);
 
+        // Delete existing file if force re-download
+        if (options?.force && modelFile.exists) {
+          console.log("Force re-download: deleting existing file...");
+          modelFile.delete();
+        }
+
+        // Skip if file already exists and we're not forcing
+        if (!options?.force && modelFile.exists) {
+          const size = modelFile.size ?? 0;
+          if (validateModelFile(modelId, size)) {
+            console.log("Model already exists and is valid, skipping download");
+            await refreshModelFiles();
+            return true;
+          } else {
+            console.log("Existing model file is invalid, re-downloading...");
+            modelFile.delete();
+          }
+        }
+
         console.log("Downloading model from:", model.url);
         console.log("Target path:", modelFile.uri);
 
@@ -113,6 +167,15 @@ export function useLlamaModels() {
         });
 
         console.log("Model download complete");
+        
+        // Validate the downloaded file
+        const downloadedSize = modelFile.size ?? 0;
+        if (!validateModelFile(modelId, downloadedSize)) {
+          setLlamaError("Downloaded file appears to be corrupted. Please try again.");
+          modelFile.delete();
+          return false;
+        }
+        
         await refreshModelFiles();
         return true;
       } catch (error) {
@@ -123,12 +186,12 @@ export function useLlamaModels() {
         setIsDownloading(false);
       }
     },
-    [getModelDirectory, refreshModelFiles]
+    [getModelDirectory, refreshModelFiles, validateModelFile]
   );
 
   // Initialize a model
   const initializeLlamaModel = useCallback(
-    async (modelId: string): Promise<boolean> => {
+    async (modelId: string, options?: { forceRedownload?: boolean }): Promise<boolean> => {
       const model = LLAMA_MODELS.find((m) => m.id === modelId);
       if (!model) {
         console.error("Model not found:", modelId);
@@ -139,11 +202,24 @@ export function useLlamaModels() {
         setIsInitializingModel(true);
         setLlamaError(null);
 
-        // Check if model file exists
+        // Check if model file exists and is valid
         const currentFiles = await refreshModelFiles();
-        if (!currentFiles[modelId]) {
-          console.log("Model not found locally, downloading...");
-          const downloaded = await downloadModel(modelId);
+        const existingFile = currentFiles[modelId];
+        
+        const needsDownload = !existingFile || 
+                             !existingFile.isValid || 
+                             options?.forceRedownload;
+
+        if (needsDownload) {
+          if (existingFile && !existingFile.isValid) {
+            console.log("Model file exists but is invalid/corrupted, re-downloading...");
+          } else if (options?.forceRedownload) {
+            console.log("Force re-download requested...");
+          } else {
+            console.log("Model not found locally, downloading...");
+          }
+          
+          const downloaded = await downloadModel(modelId, { force: options?.forceRedownload || !existingFile?.isValid });
           if (!downloaded) {
             return false;
           }
@@ -169,7 +245,7 @@ export function useLlamaModels() {
           }
         }
 
-        // Initialize new context
+        // Initialize new context with GPU acceleration
         const context = await initLlama({
           model: modelFile.uri,
           n_ctx: 2048,
@@ -177,6 +253,9 @@ export function useLlamaModels() {
           n_threads: 4,
           use_mlock: true,
           use_mmap: true,
+          // Enable GPU acceleration (Metal on iOS, Vulkan on Android)
+          // Set to a high number to offload as many layers as possible to GPU
+          n_gpu_layers: 99,
         });
 
         contextRef.current = context;
@@ -353,6 +432,16 @@ export function useLlamaModels() {
     return contextRef.current !== null;
   }, []);
 
+  // Check if model is valid/complete
+  const isModelValid = useCallback((modelId: string) => {
+    return modelFiles[modelId]?.isValid ?? false;
+  }, [modelFiles]);
+
+  // Load existing models on mount
+  useEffect(() => {
+    refreshModelFiles();
+  }, []);
+
   return {
     // State
     llamaContext: contextRef.current,
@@ -377,8 +466,12 @@ export function useLlamaModels() {
     getDownloadProgress,
     getLlamaContext,
     isReady,
+    isModelValid,
     refreshModelFiles,
     getModelDirectory,
+    
+    // Constants
+    availableModels: LLAMA_MODELS,
   };
 }
 
