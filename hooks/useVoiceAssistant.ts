@@ -49,6 +49,8 @@ export interface VoiceAssistantConfig {
   maxConcurrentSynthesis?: number;
   ttsSpeed?: number;
   ttsNaturalness?: number;
+  /** Playback rate for audio (0.5 to 2.0, default 1.0). Applied at native level with zero conversion overhead. */
+  playbackRate?: number;
 }
 
 const DEFAULT_CONFIG: VoiceAssistantConfig = {
@@ -57,16 +59,18 @@ const DEFAULT_CONFIG: VoiceAssistantConfig = {
   maxConcurrentSynthesis: 1,  // One at a time to reduce CPU competition
   ttsSpeed: 1.0,
   ttsNaturalness: 0.6,
+  playbackRate: 0.85,  // Slightly slower for better comprehension
 };
 
 // Minimum audio buffer (in seconds) before starting playback
-const MIN_AUDIO_BUFFER_SECONDS = 3.0;
+const MIN_AUDIO_BUFFER_SECONDS = 2.0;
 
-// Phrase boundary detection - split on commas, semicolons, colons, and sentence endings
-// This creates smaller chunks for faster time-to-first-audio
-const PHRASE_SPLIT_REGEX = /(?<=[,;:.!?])\s+/;
-// Also split on conjunctions that start a new clause
-const CONJUNCTION_SPLIT_REGEX = /\s+(?=(?:and|but|or|so|because|although|however|therefore|meanwhile|furthermore)\s)/i;
+// Phrase boundary punctuation - periods, exclamations, questions, commas, semicolons, colons
+const PHRASE_BREAK_PUNCTUATION = /[.!?,;:]/;
+// Conjunctions to split on (NOT 'and' - too common and breaks natural flow)
+const SPLIT_CONJUNCTIONS = /\b(but|or|so|because|although|however|therefore|meanwhile|furthermore)\b/i;
+// Minimum words per phrase
+const MIN_WORDS_PER_PHRASE = 6;
 
 export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
   const mergedConfig = { ...DEFAULT_CONFIG, ...config };
@@ -176,51 +180,84 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     }
   }, [whisper, llama, tts]);
 
-  // Extract phrases from accumulated text for faster TTS
-  // Splits on: commas, semicolons, colons, periods, exclamations, questions
-  // This creates smaller chunks (~3-8 words) for faster time-to-first-audio
+  // Helper to count words in text
+  const countWords = useCallback((text: string): number => {
+    return text.trim().split(/\s+/).filter(w => w.length > 0).length;
+  }, []);
+
+  // Extract phrases from accumulated text for TTS
+  // Rules:
+  // 1. Don't break on 'and' (too common)
+  // 2. Minimum 6 words per phrase
+  // 3. Only break when we have >=6 words AND hit break punctuation or conjunction
+  // 4. If last phrase has <6 words, keep accumulating
   const extractSentences = useCallback((text: string): { sentences: string[]; remainder: string } => {
     const phrases: string[] = [];
+    let currentPhrase = "";
     let remainder = text;
-    const minLength = mergedConfig.minSentenceLength || 6;
     
-    // First split by phrase boundaries (punctuation)
-    const parts = text.split(PHRASE_SPLIT_REGEX);
-    
-    if (parts.length > 1) {
-      // All but the last part are complete phrases
-      for (let i = 0; i < parts.length - 1; i++) {
-        let phrase = parts[i].trim();
+    // Process character by character to find natural break points
+    let i = 0;
+    while (i < text.length) {
+      currentPhrase += text[i];
+      
+      // Check if we hit a break punctuation
+      const lastChar = text[i];
+      const isPunctuation = PHRASE_BREAK_PUNCTUATION.test(lastChar);
+      
+      // Look ahead for conjunction after space
+      let isConjunction = false;
+      if (text[i] === ' ' && i + 1 < text.length) {
+        const remainingText = text.substring(i + 1);
+        const conjMatch = remainingText.match(/^(but|or|so|because|although|however|therefore|meanwhile|furthermore)\b/i);
+        if (conjMatch) {
+          isConjunction = true;
+        }
+      }
+      
+      // Check if we should break here
+      if (isPunctuation || isConjunction) {
+        const wordCount = countWords(currentPhrase);
         
-        // Further split on conjunctions for even smaller chunks
-        const subParts = phrase.split(CONJUNCTION_SPLIT_REGEX);
-        for (const subPart of subParts) {
-          const trimmed = subPart.trim();
-          if (trimmed.length >= minLength) {
-            phrases.push(trimmed);
+        // Only break if we have enough words
+        if (wordCount >= MIN_WORDS_PER_PHRASE) {
+          // For punctuation, include it; for conjunction, don't include the space
+          if (isPunctuation) {
+            phrases.push(currentPhrase.trim());
+            currentPhrase = "";
+          } else if (isConjunction) {
+            // Break before the conjunction
+            phrases.push(currentPhrase.trim());
+            currentPhrase = "";
           }
         }
+        // If not enough words, keep accumulating
       }
-      remainder = parts[parts.length - 1];
+      
+      i++;
     }
     
-    // Also check if remainder has a conjunction we can split on
-    // but only if there's already content before it
-    if (remainder.length > 30) {
-      const conjMatch = remainder.match(CONJUNCTION_SPLIT_REGEX);
-      if (conjMatch && conjMatch.index && conjMatch.index > minLength) {
-        const beforeConj = remainder.substring(0, conjMatch.index).trim();
-        if (beforeConj.length >= minLength) {
-          phrases.push(beforeConj);
-          remainder = remainder.substring(conjMatch.index).trim();
-        }
+    // Whatever is left is the remainder
+    remainder = currentPhrase.trim();
+    
+    // If remainder has break punctuation at the end AND enough words, it's a complete phrase
+    if (remainder.length > 0) {
+      const lastCharOfRemainder = remainder[remainder.length - 1];
+      const endsWithPunctuation = PHRASE_BREAK_PUNCTUATION.test(lastCharOfRemainder);
+      const wordCount = countWords(remainder);
+      
+      if (endsWithPunctuation && wordCount >= MIN_WORDS_PER_PHRASE) {
+        phrases.push(remainder);
+        remainder = "";
       }
     }
     
-    tLog(`📊 Extracted ${phrases.length} phrases, remainder: "${remainder.substring(0, 30)}..."`);
+    if (phrases.length > 0 || remainder.length > 0) {
+      tLog(`📊 Extracted ${phrases.length} phrases (${phrases.map(p => countWords(p) + 'w').join(', ')}), remainder: ${countWords(remainder)}w "${remainder.substring(0, 30)}${remainder.length > 30 ? '...' : ''}"`);
+    }
     
     return { sentences: phrases, remainder };
-  }, [mergedConfig.minSentenceLength]);
+  }, [countWords]);
 
   // Clean text for TTS - remove non-English characters and normalize
   const cleanTextForTTS = useCallback((text: string): string => {
@@ -230,6 +267,13 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     cleaned = cleaned.replace(/\s+/g, ' ').trim();
     // Remove any remaining control characters
     cleaned = cleaned.replace(/[\x00-\x1F\x7F]/g, '');
+    // Replace trailing punctuation (comma, semicolon, colon) with period for better TTS prosody
+    // Keep ! and ? as they affect intonation
+    cleaned = cleaned.replace(/[,;:]$/, '.');
+    // Ensure phrase ends with punctuation (add period if missing)
+    if (cleaned.length > 0 && !/[.!?]$/.test(cleaned)) {
+      cleaned += '.';
+    }
     return cleaned;
   }, []);
 
@@ -320,13 +364,21 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       ));
       setCurrentPlayingId(item.id);
       
-      tLog(`▶️ Playing: "${item.text.substring(0, 30)}..."`);
+      tLog(`▶️ Playing: "${item.text.substring(0, 30)}..." at ${mergedConfig.playbackRate}x speed`);
       
       // Create audio player
       const player = new AudioModule.AudioPlayer({ uri: item.audioPath }, 100, false);
       audioPlayersRef.current.set(item.id, player);
       
+      // Set playback rate (done at native level, zero latency overhead)
+      // 0.9 = 90% speed (slightly slower for better comprehension)
+      const playbackRate = mergedConfig.playbackRate ?? 0.85;
+      player.setPlaybackRate(playbackRate, 'high');
+      
       // Play and wait for completion
+      // Adjust timeout based on playback rate (slower = longer duration)
+      const adjustedDuration = (item.audioDuration || 5) / playbackRate;
+      
       await new Promise<void>((resolve) => {
         // Set up a polling mechanism to detect when playback ends
         player.play();
@@ -340,11 +392,11 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
           }
         }, 100);
         
-        // Also set a timeout based on estimated duration
+        // Also set a timeout based on estimated duration (adjusted for playback rate)
         setTimeout(() => {
           clearInterval(checkInterval);
           resolve();
-        }, (item.audioDuration || 5) * 1000 + 500); // Add 500ms buffer
+        }, adjustedDuration * 1000 + 500); // Add 500ms buffer
       });
       
       // Cleanup
@@ -368,7 +420,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       console.error("Audio playback error:", err);
       setCurrentPlayingId(null);
     }
-  }, []);
+  }, [mergedConfig.playbackRate]);
 
   // Process TTS queue - synthesize and play in order
   const processTTSQueue = useCallback(async () => {

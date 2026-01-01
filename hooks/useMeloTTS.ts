@@ -839,7 +839,7 @@ export function useMeloTTS() {
     }
   }, [synthesize, float32ToWav]);
 
-  const playAudio = useCallback(async (filePath: string) => {
+  const playAudio = useCallback(async (filePath: string, options?: { rate?: number }) => {
     try {
       // Stop any existing playback
       if (audioPlayerRef.current) {
@@ -851,8 +851,15 @@ export function useMeloTTS() {
       const player = new AudioModule.AudioPlayer({ uri: filePath }, 500, false);
       audioPlayerRef.current = player;
       
+      // Set playback rate if specified (done at native level, zero latency overhead)
+      if (options?.rate && options.rate !== 1.0) {
+        player.setPlaybackRate(options.rate, 'high');
+        tLog(`Audio playback started at ${options.rate}x speed`);
+      } else {
+        tLog("Audio playback started");
+      }
+      
       player.play();
-      tLog("Audio playback started");
     } catch (error) {
       console.error("Audio playback error:", error);
       throw error;
@@ -875,13 +882,15 @@ export function useMeloTTS() {
       noiseScale?: number;
       lengthScale?: number;
       noiseScaleW?: number;
+      /** Playback rate (0.5 to 2.0, default 1.0). Applied at native level with zero latency. */
+      playbackRate?: number;
     } = {}
   ) => {
     const directory = await getModelDirectory();
     const outputPath = new File(directory, `speech_${Date.now()}.wav`).uri;
     
     await synthesizeToFile(text, outputPath, options);
-    await playAudio(outputPath);
+    await playAudio(outputPath, { rate: options.playbackRate });
     
     return outputPath;
   }, [getModelDirectory, synthesizeToFile, playAudio]);
