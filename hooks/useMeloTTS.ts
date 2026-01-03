@@ -24,8 +24,11 @@ import { unzip } from "react-native-zip-archive";
 // Import ONNX runtime directly as per docs
 import { InferenceSession, Tensor } from "onnxruntime-react-native";
 
-// S3 URL for MeloTTS model files
-const MELO_TTS_MODELS_URL = "https://test-transcription-service-nxtwave.s3.ap-south-1.amazonaws.com/melo-tts-models.zip";
+// S3 URLs for MeloTTS model files
+// Default MeloTTS variant
+export const MELO_TTS_MODELS_URL = "https://test-transcription-service-nxtwave.s3.ap-south-1.amazonaws.com/melo-tts-models.zip";
+// Custom model variant
+export const MELO_TTS_CUSTOM_MODEL_URL = "https://test-transcription-service-nxtwave.s3.ap-south-1.amazonaws.com/default_export.zip";
 
 // Helper to get formatted timestamp for logs
 const getTimestamp = () => {
@@ -115,6 +118,9 @@ const LETTER_TO_PHONE: Record<string, string[]> = {
   'wh': ['w'], 'ck': ['k'], 'ng': ['ng'],
 };
 
+// Model source types
+export type ModelSource = 'default' | 'custom';
+
 export function useMeloTTS() {
   const [modelFiles, setModelFiles] = useState<Record<string, ModelFileInfo>>({});
   const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
@@ -130,6 +136,13 @@ export function useMeloTTS() {
   const [currentModelId, setCurrentModelId] = useState<string | null>(null);
   const [onnxError, setOnnxError] = useState<string | null>(null);
   
+  // Track current model source and which sources are downloaded
+  const [currentModelSource, setCurrentModelSource] = useState<ModelSource>('default');
+  const [downloadedSources, setDownloadedSources] = useState<Record<ModelSource, boolean>>({
+    default: false,
+    custom: false,
+  });
+  
   // Model resources
   const sessionRef = useRef<any>(null); // InferenceSession from onnxruntime-react-native
   const [tokens, setTokens] = useState<Record<string, number>>({});
@@ -139,7 +152,8 @@ export function useMeloTTS() {
   // Audio player
   const audioPlayerRef = useRef<any>(null);
 
-  const getModelDirectory = useCallback(async () => {
+  // Get directory for a specific model source
+  const getModelDirectoryForSource = useCallback(async (source: ModelSource) => {
     let documentDirectory: Directory;
     try {
       documentDirectory = Paths.document;
@@ -151,19 +165,62 @@ export function useMeloTTS() {
       throw new Error("Document directory is not available.");
     }
 
-    const directory = new Directory(documentDirectory, "melo-tts-models");
+    const dirName = source === 'custom' ? 'melo-tts-custom' : 'melo-tts-default';
+    const directory = new Directory(documentDirectory, dirName);
     try {
       directory.create({ idempotent: true, intermediates: true });
     } catch (error) {
-      console.warn("Failed to ensure MeloTTS model directory exists:", error);
+      console.warn(`Failed to ensure ${dirName} directory exists:`, error);
       throw error;
     }
     return directory;
   }, []);
 
-  const refreshModelFiles = useCallback(async () => {
+  // Get current model directory based on active source
+  const getModelDirectory = useCallback(async () => {
+    return getModelDirectoryForSource(currentModelSource);
+  }, [currentModelSource, getModelDirectoryForSource]);
+
+  // Check if a model source has been downloaded
+  const checkSourceDownloaded = useCallback(async (source: ModelSource): Promise<boolean> => {
     try {
-      const directory = await getModelDirectory();
+      const directory = await getModelDirectoryForSource(source);
+      const modelFiles = [
+        new File(directory, "model_int8.onnx"),
+        new File(directory, "model_fp16.onnx"),
+        new File(directory, "model_mixed.onnx"),
+        new File(directory, "model.onnx"),
+      ];
+      
+      const hasAnyModel = modelFiles.some(f => {
+        try { return f.info().exists; } catch { return false; }
+      });
+      
+      return hasAnyModel;
+    } catch {
+      return false;
+    }
+  }, [getModelDirectoryForSource]);
+
+  // Refresh downloaded sources state
+  const refreshDownloadedSources = useCallback(async () => {
+    const defaultDownloaded = await checkSourceDownloaded('default');
+    const customDownloaded = await checkSourceDownloaded('custom');
+    
+    setDownloadedSources({
+      default: defaultDownloaded,
+      custom: customDownloaded,
+    });
+    
+    tLog(`Downloaded sources: default=${defaultDownloaded}, custom=${customDownloaded}`);
+    
+    return { default: defaultDownloaded, custom: customDownloaded };
+  }, [checkSourceDownloaded]);
+
+  const refreshModelFiles = useCallback(async (source?: ModelSource) => {
+    try {
+      const targetSource = source ?? currentModelSource;
+      const directory = await getModelDirectoryForSource(targetSource);
       const fileMap: Record<string, ModelFileInfo> = {};
       
       for (const model of TTS_MODELS) {
@@ -183,37 +240,42 @@ export function useMeloTTS() {
       }
       
       setModelFiles(fileMap);
-      console.log(`Refreshed model files: ${Object.keys(fileMap).length} found`);
+      console.log(`Refreshed model files for ${targetSource}: ${Object.keys(fileMap).length} found`);
       return fileMap;
     } catch (error) {
       console.error("Failed to refresh model files:", error);
       return {};
     }
-  }, [getModelDirectory]);
+  }, [currentModelSource, getModelDirectoryForSource]);
 
-  const downloadAndExtractModels = useCallback(async (): Promise<boolean> => {
+  const downloadAndExtractModels = useCallback(async (source: ModelSource = 'default'): Promise<boolean> => {
     try {
       setIsDownloading(true);
       setDownloadProgress({ models: 0 });
-      tLog("Starting MeloTTS models download from S3...");
+      const modelUrl = source === 'custom' ? MELO_TTS_CUSTOM_MODEL_URL : MELO_TTS_MODELS_URL;
+      tLog(`Starting MeloTTS models download from S3... (${source})`);
 
-      const directory = await getModelDirectory();
+      // Get source-specific directory
+      const directory = await getModelDirectoryForSource(source);
       
-      // Check if any model file already exists
-      const modelFiles = [
+      // Check if any model file already exists in this source's directory
+      const existingModelFiles = [
         new File(directory, "model_int8.onnx"),
         new File(directory, "model_fp16.onnx"),
         new File(directory, "model_mixed.onnx"),
         new File(directory, "model.onnx"),
       ];
       
+      // Check if models already exist
       try {
-        const hasAnyModel = modelFiles.some(f => {
+        const hasAnyModel = existingModelFiles.some(f => {
           try { return f.info().exists; } catch { return false; }
         });
         if (hasAnyModel) {
-          tLog("MeloTTS model file already exists, refreshing state...");
-          await refreshModelFiles();
+          tLog(`MeloTTS ${source} model already downloaded, switching to it...`);
+          setCurrentModelSource(source);
+          await refreshModelFiles(source);
+          await refreshDownloadedSources();
           setDownloadProgress({ models: 1 });
           return true;
         }
@@ -241,7 +303,7 @@ export function useMeloTTS() {
       setDownloadSpeed("");
 
       const downloadResumable = createDownloadResumable(
-        MELO_TTS_MODELS_URL,
+        modelUrl,
         zipPath,
         {},
         (progressData: DownloadProgressData) => {
@@ -288,14 +350,68 @@ export function useMeloTTS() {
       setDownloadSpeed(`Done in ${totalDownloadTime}s`);
       setDownloadProgress({ models: 0.85 });
 
-      // Extract zip to model directory
-      // The zip contains a folder 'melo-tts-models' with the files inside
-      // We'll extract to parent directory so files end up in the right place
+      // Extract zip to parent directory
+      // Default zip contains 'melo-tts-models' folder
+      // Custom zip contains 'default_export' folder
+      // We'll extract and then move files to the source-specific directory
       const parentDir = Paths.document.uri;
       await unzip(zipPath, parentDir);
 
       tLog("Extraction complete!");
-      setDownloadProgress({ models: 1 });
+      setDownloadProgress({ models: 0.90 });
+
+      // Determine source folder names based on zip contents
+      const possibleSourceFolders = [
+        { dir: new Directory(Paths.document, "default_export"), name: "default_export" },
+        { dir: new Directory(Paths.document, "melo-tts-models"), name: "melo-tts-models" },
+      ];
+      
+      const filesToMove = ["model_int8.onnx", "model_fp16.onnx", "model_mixed.onnx", "model.onnx", "tokens.txt", "lexicon.txt", "tts_config.json"];
+      
+      // Find which folder the zip extracted to and move files to target directory
+      for (const { dir: sourceDir, name: folderName } of possibleSourceFolders) {
+        try {
+          if (sourceDir.exists) {
+            tLog(`Found '${folderName}' folder, moving files to ${source} directory...`);
+            
+            for (const filename of filesToMove) {
+              try {
+                const srcFile = new File(sourceDir, filename);
+                const destFile = new File(directory, filename);
+                
+                if (srcFile.info().exists) {
+                  // Delete destination if it exists
+                  try {
+                    if (destFile.info().exists) {
+                      destFile.delete();
+                    }
+                  } catch (e) { /* ignore */ }
+                  
+                  // Move file
+                  srcFile.move(destFile);
+                  tLog(`Moved: ${filename}`);
+                }
+              } catch (e) {
+                console.warn(`Failed to move ${filename}:`, e);
+              }
+            }
+            
+            // Clean up the extracted folder
+            try {
+              sourceDir.delete();
+              tLog(`Cleaned up '${folderName}' folder`);
+            } catch (e) {
+              console.warn(`Failed to delete ${folderName} folder:`, e);
+            }
+            
+            break; // Found and processed the source folder
+          }
+        } catch (e) {
+          // Folder doesn't exist, try next one
+        }
+      }
+
+      setDownloadProgress({ models: 0.95 });
 
       // Clean up zip file
       try {
@@ -317,6 +433,8 @@ export function useMeloTTS() {
         console.log("  (error listing)");
       }
 
+      setDownloadProgress({ models: 1 });
+
       // Verify extraction - check for any model file
       const modelFilesAfter = [
         new File(directory, "model_int8.onnx"),
@@ -333,10 +451,12 @@ export function useMeloTTS() {
         throw new Error("Extraction verification failed - no model file found");
       }
       
-      tLog("Model files verified successfully");
+      tLog(`Model files verified successfully for ${source}`);
       
-      // Refresh the model files state
-      await refreshModelFiles();
+      // Set current source and refresh states
+      setCurrentModelSource(source);
+      await refreshModelFiles(source);
+      await refreshDownloadedSources();
 
       return true;
     } catch (error) {
@@ -346,7 +466,22 @@ export function useMeloTTS() {
     } finally {
       setIsDownloading(false);
     }
-  }, [getModelDirectory, refreshModelFiles]);
+  }, [getModelDirectoryForSource, refreshModelFiles, refreshDownloadedSources]);
+
+  // Switch to a different model source (if already downloaded)
+  const switchModelSource = useCallback(async (source: ModelSource): Promise<boolean> => {
+    const isDownloaded = await checkSourceDownloaded(source);
+    
+    if (!isDownloaded) {
+      tLog(`${source} model not downloaded yet, downloading...`);
+      return downloadAndExtractModels(source);
+    }
+    
+    tLog(`Switching to ${source} model source...`);
+    setCurrentModelSource(source);
+    await refreshModelFiles(source);
+    return true;
+  }, [checkSourceDownloaded, downloadAndExtractModels, refreshModelFiles]);
 
   const loadTokens = useCallback(async (tokensPath: string): Promise<Record<string, number>> => {
     const file = new File(tokensPath);
@@ -491,19 +626,25 @@ export function useMeloTTS() {
   );
 
   const initializeModel = useCallback(
-    async (modelId: string) => {
+    async (modelId: string, sourceOverride?: ModelSource) => {
       const model = TTS_MODELS.find((m) => m.id === modelId);
       if (!model) throw new Error("Invalid model selected");
 
       try {
         setIsInitializingModel(true);
         setOnnxError(null);
-        tLog(`Initializing TTS model: ${model.label}`);
+        const targetSource = sourceOverride ?? currentModelSource;
+        tLog(`Initializing TTS model: ${model.label} from source: ${targetSource}`);
 
-        const directory = await getModelDirectory();
+        const directory = await getModelDirectoryForSource(targetSource);
         
-        // Check/get model file path
-        const modelPath = await downloadModel(model);
+        // Get model file path from the correct directory
+        const modelFile = new File(directory, model.filename);
+        if (!modelFile.info().exists) {
+          throw new Error(`Model file ${model.filename} not found in ${targetSource} directory. Please download the models first.`);
+        }
+        const modelPath = modelFile.uri;
+        tLog(`Using model file: ${modelPath}`);
         
         // Load tokens.txt
         const tokensFile = new File(directory, "tokens.txt");
@@ -575,7 +716,7 @@ export function useMeloTTS() {
         setIsInitializingModel(false);
       }
     },
-    [downloadModel, getModelDirectory, loadTokens, loadLexicon, loadConfig]
+    [getModelDirectoryForSource, currentModelSource, loadTokens, loadLexicon, loadConfig]
   );
 
   // Simple G2P fallback for unknown words
@@ -989,11 +1130,13 @@ export function useMeloTTS() {
     };
 
     loadExistingModels();
+    // Also check which sources have been downloaded
+    refreshDownloadedSources();
 
     return () => {
       isMounted = false;
     };
-  }, [getModelDirectory]);
+  }, [getModelDirectory, refreshDownloadedSources]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1015,9 +1158,12 @@ export function useMeloTTS() {
     currentModelId,
     config,
     onnxError,
+    currentModelSource,
+    downloadedSources,
 
     // Actions
     downloadAndExtractModels,
+    switchModelSource,
     initializeModel,
     resetModel,
     synthesize,
@@ -1026,6 +1172,7 @@ export function useMeloTTS() {
     playAudio,
     stopAudio,
     checkOnnxAvailability,
+    refreshDownloadedSources,
 
     // Helpers
     getModelById,
@@ -1034,7 +1181,9 @@ export function useMeloTTS() {
     getDownloadProgress,
     isReady,
     getModelDirectory,
+    getModelDirectoryForSource,
     refreshModelFiles,
+    checkSourceDownloaded,
 
     // Constants
     availableModels: TTS_MODELS,

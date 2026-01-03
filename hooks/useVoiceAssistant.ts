@@ -11,7 +11,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useWhisperModels } from "./useWhisperModels";
 import { useLlamaModels, ChatMessage } from "./useLlamaModels";
-import { useMeloTTS } from "./useMeloTTS";
+import { useMeloTTS, type ModelSource } from "./useMeloTTS";
 import { File, Paths, Directory } from "expo-file-system";
 import AudioModule from "expo-audio/build/AudioModule";
 
@@ -51,6 +51,8 @@ export interface VoiceAssistantConfig {
   ttsNaturalness?: number;
   /** Playback rate for audio (0.5 to 2.0, default 1.0). Applied at native level with zero conversion overhead. */
   playbackRate?: number;
+  /** TTS model source: 'default' (MeloTTS) or 'custom' (Custom trained model) */
+  ttsModelSource?: ModelSource;
 }
 
 const DEFAULT_CONFIG: VoiceAssistantConfig = {
@@ -60,6 +62,7 @@ const DEFAULT_CONFIG: VoiceAssistantConfig = {
   ttsSpeed: 1.0,
   ttsNaturalness: 0.6,
   playbackRate: 0.85,  // Slightly slower for better comprehension
+  ttsModelSource: 'default',  // MeloTTS Default
 };
 
 // Minimum audio buffer (in seconds) before starting playback
@@ -95,6 +98,9 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
   const audioPlayersRef = useRef<Map<string, any>>(new Map());
   const synthesisAbortRef = useRef<boolean>(false);
   const currentTranscriberRef = useRef<any>(null);
+  
+  // Synchronous playback guard - prevents race conditions with async state updates
+  const isPlaybackInProgressRef = useRef<boolean>(false);
   
   // Accumulated text for sentence detection
   const accumulatedTextRef = useRef<string>("");
@@ -150,24 +156,35 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       // Initialize TTS (use FP32 - RTF ~0.9)
       const ttsAlreadyReady = tts.isReady();
       const currentModel = tts.getCurrentModel();
-      tLog(`TTS Status: ready=${ttsAlreadyReady}, currentModel=${currentModel?.id || 'none'}`);
+      const ttsSource = mergedConfig.ttsModelSource || 'default';
+      tLog(`TTS Status: ready=${ttsAlreadyReady}, currentModel=${currentModel?.id || 'none'}, source=${ttsSource}`);
       
       if (!ttsAlreadyReady) {
         tLog("Initializing TTS...");
-        // First check if models are downloaded
-        const models = await tts.refreshModelFiles();
+        // Switch to the selected source (downloads if needed)
+        await tts.switchModelSource(ttsSource);
+        
+        // Now refresh and check models
+        const models = await tts.refreshModelFiles(ttsSource);
         tLog("Available TTS models:", Object.keys(models));
-        if (!models["melo-int8"] && !models["melo-fp16"] && !models["melo-fp32"]) {
-          tLog("Downloading TTS models...");
-          await tts.downloadAndExtractModels();
-        }
-        // Use FP32 (RTF ~0.9)
+        
+        // Use FP32 (RTF ~0.9) - pass source explicitly to avoid state timing issues
         const availableTtsModel = options?.ttsModel || "melo-fp32";
-        tLog(`Loading TTS model: ${availableTtsModel}`);
-        await tts.initializeModel(availableTtsModel);
+        tLog(`Loading TTS model: ${availableTtsModel} from source: ${ttsSource}`);
+        await tts.initializeModel(availableTtsModel, ttsSource);
         tLog(`TTS initialized with: ${tts.getCurrentModel()?.id || 'unknown'}`);
       } else {
-        tLog(`TTS already initialized with: ${currentModel?.id}`);
+        // Check if we need to switch sources
+        if (tts.currentModelSource !== ttsSource) {
+          tLog(`Switching TTS source from ${tts.currentModelSource} to ${ttsSource}...`);
+          await tts.switchModelSource(ttsSource);
+          const availableTtsModel = options?.ttsModel || "melo-fp32";
+          // Pass source explicitly to avoid state timing issues
+          await tts.initializeModel(availableTtsModel, ttsSource);
+          tLog(`TTS re-initialized with: ${tts.getCurrentModel()?.id || 'unknown'}`);
+        } else {
+          tLog(`TTS already initialized with: ${currentModel?.id}`);
+        }
       }
       
       tLog("All models initialized!");
@@ -178,7 +195,35 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       setError(errorMsg);
       return false;
     }
-  }, [whisper, llama, tts]);
+  }, [whisper, llama, tts, mergedConfig.ttsModelSource]);
+
+  // Switch TTS source at runtime (downloads if needed, then re-initializes)
+  const switchTTSSource = useCallback(async (newSource: ModelSource) => {
+    if (pipelineState !== 'idle') {
+      console.warn("Cannot switch TTS source while pipeline is active");
+      return false;
+    }
+    
+    try {
+      setError(null);
+      tLog(`Switching TTS source to: ${newSource}`);
+      
+      // Switch model source (downloads if needed)
+      await tts.switchModelSource(newSource);
+      
+      // Re-initialize with FP32 model from the new source
+      // Pass the source explicitly to avoid state timing issues
+      await tts.initializeModel("melo-fp32", newSource);
+      
+      tLog(`TTS switched to ${newSource} with model: ${tts.getCurrentModel()?.id || 'unknown'}`);
+      return true;
+    } catch (err) {
+      const errorMsg = `Failed to switch TTS source: ${err}`;
+      console.error(errorMsg);
+      setError(errorMsg);
+      return false;
+    }
+  }, [tts, pipelineState]);
 
   // Helper to count words in text
   const countWords = useCallback((text: string): number => {
@@ -358,6 +403,13 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
   const playTTSItem = useCallback(async (item: TTSQueueItem) => {
     if (!item.audioPath) return;
     
+    // Synchronous guard - check and set immediately to prevent race conditions
+    if (isPlaybackInProgressRef.current) {
+      tLog(`⚠️ Playback already in progress, skipping: "${item.text.substring(0, 30)}..."`);
+      return;
+    }
+    isPlaybackInProgressRef.current = true;
+    
     try {
       setTtsQueue(prev => prev.map(i => 
         i.id === item.id ? { ...i, status: "playing" } : i
@@ -380,23 +432,44 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       const adjustedDuration = (item.audioDuration || 5) / playbackRate;
       
       await new Promise<void>((resolve) => {
-        // Set up a polling mechanism to detect when playback ends
+        // Start playback
         player.play();
         
-        const checkInterval = setInterval(() => {
-          // Check if player is still playing
-          // AudioPlayer doesn't have a built-in completion callback, so we poll
-          if (!player.playing) {
+        // Track if we've already resolved to prevent double-resolve
+        let resolved = false;
+        const safeResolve = () => {
+          if (!resolved) {
+            resolved = true;
             clearInterval(checkInterval);
             resolve();
           }
-        }, 100);
+        };
+        
+        // Wait a bit before checking player.playing to let playback actually start
+        // The player.playing property may return false immediately after play() is called
+        const initialDelay = 300; // ms to wait before starting to poll
+        
+        let checkInterval: ReturnType<typeof setInterval>;
+        
+        setTimeout(() => {
+          // After initial delay, start polling for completion
+          checkInterval = setInterval(() => {
+            // Check if player is still playing
+            if (!player.playing && !resolved) {
+              tLog(`🔇 Playback ended (detected via polling): "${item.text.substring(0, 20)}..."`);
+              safeResolve();
+            }
+          }, 150); // Poll every 150ms
+        }, initialDelay);
         
         // Also set a timeout based on estimated duration (adjusted for playback rate)
+        // This is the safety net in case polling doesn't work
         setTimeout(() => {
-          clearInterval(checkInterval);
-          resolve();
-        }, adjustedDuration * 1000 + 500); // Add 500ms buffer
+          if (!resolved) {
+            tLog(`⏱️ Playback timeout reached: "${item.text.substring(0, 20)}..."`);
+          }
+          safeResolve();
+        }, adjustedDuration * 1000 + 1000); // Add 1s buffer
       });
       
       // Cleanup
@@ -419,6 +492,9 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     } catch (err) {
       console.error("Audio playback error:", err);
       setCurrentPlayingId(null);
+    } finally {
+      // Always release the playback lock
+      isPlaybackInProgressRef.current = false;
     }
   }, [mergedConfig.playbackRate]);
 
@@ -457,7 +533,8 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       
       // Play ready items in order (if nothing is currently playing)
       // Only start if we have enough buffer OR if LLM is done and no more pending
-      if (!currentPlayingId) {
+      // Check BOTH state and ref - ref provides synchronous guard against race conditions
+      if (!currentPlayingId && !isPlaybackInProgressRef.current) {
         const readyItem = ttsQueue.find(item => item.status === "ready");
         if (readyItem) {
           const shouldStartPlaying = hasEnoughBuffer || 
@@ -713,6 +790,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
   // Cancel current operation
   const cancel = useCallback(async () => {
     synthesisAbortRef.current = true;
+    isPlaybackInProgressRef.current = false; // Reset playback lock
     
     // Stop transcription
     if (currentTranscriberRef.current?.stop) {
@@ -790,6 +868,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     sendTextMessage,
     cancel,
     clearHistory,
+    switchTTSSource,
     
     // Individual hooks access (for advanced usage)
     whisper,

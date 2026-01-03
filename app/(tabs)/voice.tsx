@@ -19,6 +19,7 @@ import {
   requestRecordingPermissionsAsync,
 } from "expo-audio";
 import { useVoiceAssistant, PipelineState } from "@/hooks/useVoiceAssistant";
+import { type ModelSource } from "@/hooks/useMeloTTS";
 
 // Color palette - Deep navy with coral accent
 const COLORS = {
@@ -48,6 +49,8 @@ export default function VoiceAssistantScreen() {
   const [isInitializing, setIsInitializing] = useState(false);
   const [inputMode, setInputMode] = useState<"voice" | "text">("voice");
   const [textInput, setTextInput] = useState("");
+  const [ttsModelSource, setTtsModelSource] = useState<ModelSource>('default');
+  const [showSettings, setShowSettings] = useState(false);
   
   const {
     pipelineState,
@@ -68,8 +71,11 @@ export default function VoiceAssistantScreen() {
     sendTextMessage,
     cancel,
     clearHistory,
+    switchTTSSource,
+    tts,
   } = useVoiceAssistant({
     systemPrompt: "You are a helpful, friendly voice assistant. Keep responses concise and natural for spoken conversation. Aim for 2-3 sentences per response.",
+    ttsModelSource,
   });
 
   const scrollViewRef = useRef<ScrollView>(null);
@@ -280,6 +286,83 @@ export default function VoiceAssistantScreen() {
           </View>
         </View>
       )}
+
+      {/* TTS Voice Model Selector */}
+      <View style={styles.voiceModelSection}>
+        <TouchableOpacity 
+          style={styles.voiceModelHeader}
+          onPress={() => setShowSettings(!showSettings)}
+        >
+          <Text style={styles.voiceModelTitle}>
+            🔊 Voice: {tts.currentModelSource === 'custom' ? 'Custom' : 'MeloTTS'} FP32
+          </Text>
+          <Text style={styles.voiceModelToggle}>{showSettings ? '▲' : '▼'}</Text>
+        </TouchableOpacity>
+        
+        {showSettings && (
+          <View style={styles.voiceModelOptions}>
+            <TouchableOpacity
+              style={[
+                styles.voiceModelChip,
+                tts.currentModelSource === 'default' && styles.voiceModelChipActive,
+              ]}
+              onPress={async () => {
+                if (tts.currentModelSource !== 'default') {
+                  setTtsModelSource('default');
+                  await switchTTSSource('default');
+                }
+              }}
+              disabled={isLoading || pipelineState !== 'idle'}
+            >
+              {isTTSLoading && ttsModelSource === 'default' ? (
+                <ActivityIndicator size="small" color={COLORS.success} />
+              ) : (
+                <>
+                  <Text style={[
+                    styles.voiceModelChipText,
+                    tts.currentModelSource === 'default' && styles.voiceModelChipTextActive,
+                  ]}>
+                    MeloTTS FP32
+                  </Text>
+                  <Text style={styles.voiceModelChipDesc}>
+                    {tts.downloadedSources.default ? '✓ Ready' : 'Will download'}
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={[
+                styles.voiceModelChip,
+                tts.currentModelSource === 'custom' && styles.voiceModelChipActive,
+              ]}
+              onPress={async () => {
+                if (tts.currentModelSource !== 'custom') {
+                  setTtsModelSource('custom');
+                  await switchTTSSource('custom');
+                }
+              }}
+              disabled={isLoading || pipelineState !== 'idle'}
+            >
+              {isTTSLoading && ttsModelSource === 'custom' ? (
+                <ActivityIndicator size="small" color={COLORS.success} />
+              ) : (
+                <>
+                  <Text style={[
+                    styles.voiceModelChipText,
+                    tts.currentModelSource === 'custom' && styles.voiceModelChipTextActive,
+                  ]}>
+                    Custom FP32
+                  </Text>
+                  <Text style={styles.voiceModelChipDesc}>
+                    {tts.downloadedSources.custom ? '✓ Ready' : 'Will download'}
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
 
       {/* Error Banner */}
       {error && (
@@ -863,6 +946,65 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 24,
     fontWeight: "600",
+  },
+  // Voice Model Selector styles
+  voiceModelSection: {
+    marginHorizontal: 16,
+    marginBottom: 12,
+    backgroundColor: COLORS.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    overflow: "hidden",
+  },
+  voiceModelHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  voiceModelTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: COLORS.text,
+  },
+  voiceModelToggle: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+  },
+  voiceModelOptions: {
+    flexDirection: "row",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+  },
+  voiceModelChip: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bg,
+    alignItems: "center",
+  },
+  voiceModelChipActive: {
+    borderColor: COLORS.success,
+    backgroundColor: "#F0FDFA",
+  },
+  voiceModelChipText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: COLORS.text,
+    marginBottom: 2,
+  },
+  voiceModelChipTextActive: {
+    color: COLORS.success,
+  },
+  voiceModelChipDesc: {
+    fontSize: 10,
+    color: COLORS.textMuted,
   },
 });
 

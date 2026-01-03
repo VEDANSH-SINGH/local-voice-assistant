@@ -11,7 +11,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useMeloTTS, TTS_MODELS } from "@/hooks/useMeloTTS";
+import { useMeloTTS, TTS_MODELS, type ModelSource } from "@/hooks/useMeloTTS";
 
 const ACCENT_COLOR = "#FF6B35";
 const SECONDARY_COLOR = "#004E64";
@@ -36,6 +36,7 @@ export default function TTSScreen() {
     downloadProgress,
     downloadSpeed,
     downloadAndExtractModels,
+    switchModelSource,
     initializeModel,
     speakText,
     stopAudio,
@@ -46,8 +47,11 @@ export default function TTSScreen() {
     getModelDirectory,
     checkOnnxAvailability,
     refreshModelFiles,
+    refreshDownloadedSources,
     lastInferenceTime,
     lastAudioDuration,
+    currentModelSource,
+    downloadedSources,
   } = useMeloTTS();
 
   useEffect(() => {
@@ -90,17 +94,17 @@ export default function TTSScreen() {
     }
   };
 
-  const handleDownloadModels = async () => {
+  const handleSwitchSource = async (source: ModelSource) => {
     try {
       setError("");
-      const success = await downloadAndExtractModels();
+      const success = await switchModelSource(source);
       if (success) {
-        // Re-check and initialize after download
+        // Re-check and initialize after switch/download
         await checkAndInitialize();
       }
     } catch (err) {
-      console.error("Failed to download models:", err);
-      setError(`Failed to download models: ${err}`);
+      console.error("Failed to switch/download models:", err);
+      setError(`Failed to switch models: ${err}`);
     }
   };
 
@@ -194,20 +198,40 @@ export default function TTSScreen() {
           <View style={[styles.card, styles.errorCard]}>
             <Text style={styles.cardLabel}>{onnxError ? "ONNX Runtime Error" : "Setup Required"}</Text>
             <Text style={styles.errorText}>{onnxError || error}</Text>
+            
+            {/* Model Source Selector for Initial Download */}
+            {!onnxError && error?.includes("No TTS model") && (
+              <View style={styles.modelSourceSection}>
+                <Text style={styles.modelSourceLabel}>Select Model to Download</Text>
+                <View style={styles.modelSourceOptions}>
+                  <TouchableOpacity
+                    style={[styles.downloadButton, isDownloading && styles.buttonDisabled]}
+                    onPress={() => handleSwitchSource('default')}
+                    disabled={isDownloading}
+                  >
+                    {isDownloading && currentModelSource === 'default' ? (
+                      <ActivityIndicator color="#ffffff" size="small" />
+                    ) : (
+                      <Text style={styles.downloadButtonText}>Download MeloTTS</Text>
+                    )}
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={[styles.downloadButton, { backgroundColor: SECONDARY_COLOR }, isDownloading && styles.buttonDisabled]}
+                    onPress={() => handleSwitchSource('custom')}
+                    disabled={isDownloading}
+                  >
+                    {isDownloading && currentModelSource === 'custom' ? (
+                      <ActivityIndicator color="#ffffff" size="small" />
+                    ) : (
+                      <Text style={styles.downloadButtonText}>Download Custom</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+            
             <View style={styles.errorButtons}>
-              {!onnxError && error?.includes("No TTS model") && (
-                <TouchableOpacity
-                  style={[styles.downloadButton, isDownloading && styles.buttonDisabled]}
-                  onPress={handleDownloadModels}
-                  disabled={isDownloading}
-                >
-                  {isDownloading ? (
-                    <ActivityIndicator color="#ffffff" size="small" />
-                  ) : (
-                    <Text style={styles.downloadButtonText}>Download Models</Text>
-                  )}
-                </TouchableOpacity>
-              )}
               <TouchableOpacity
                 style={[styles.retryButton]}
                 onPress={checkAndInitialize}
@@ -458,6 +482,66 @@ export default function TTSScreen() {
           </View>
         </View>
 
+        {/* Download / Switch Model Source */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Model Source</Text>
+          <View style={styles.downloadSourceCard}>
+            <Text style={styles.downloadSourceTitle}>
+              Active: {currentModelSource === 'custom' ? 'Custom Model' : 'MeloTTS Default'}
+            </Text>
+            <View style={styles.modelSourceOptions}>
+              <TouchableOpacity
+                style={[
+                  styles.modelSourceChip,
+                  currentModelSource === 'default' && styles.modelSourceChipActive,
+                ]}
+                onPress={() => handleSwitchSource('default')}
+                disabled={isDownloading}
+              >
+                <Text style={[
+                  styles.modelSourceChipText,
+                  currentModelSource === 'default' && styles.modelSourceChipTextActive,
+                ]}>
+                  MeloTTS Default
+                </Text>
+                <Text style={styles.modelSourceDesc}>
+                  {downloadedSources.default ? '✓ Downloaded' : 'Not downloaded'}
+                </Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[
+                  styles.modelSourceChip,
+                  currentModelSource === 'custom' && styles.modelSourceChipActive,
+                ]}
+                onPress={() => handleSwitchSource('custom')}
+                disabled={isDownloading}
+              >
+                <Text style={[
+                  styles.modelSourceChipText,
+                  currentModelSource === 'custom' && styles.modelSourceChipTextActive,
+                ]}>
+                  Custom Model
+                </Text>
+                <Text style={styles.modelSourceDesc}>
+                  {downloadedSources.custom ? '✓ Downloaded' : 'Not downloaded'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            
+            {isDownloading && (
+              <View style={styles.downloadingIndicator}>
+                <ActivityIndicator color="#007AFF" size="small" />
+                <Text style={styles.downloadingText}>Downloading...</Text>
+              </View>
+            )}
+            
+            <Text style={styles.downloadSourceNote}>
+              Tap to switch. Downloads once, then switches instantly.
+            </Text>
+          </View>
+        </View>
+
         {/* Stored Models Info */}
         {storedModels.length > 0 ? (
           <View style={styles.section}>
@@ -634,6 +718,92 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 12,
     marginTop: 12,
+  },
+  modelSourceSection: {
+    marginTop: 16,
+    marginBottom: 4,
+  },
+  modelSourceLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#666666",
+    marginBottom: 10,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  modelSourceOptions: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  modelSourceChip: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: "#d1d1d6",
+    backgroundColor: "#ffffff",
+  },
+  modelSourceChipActive: {
+    borderColor: "#007AFF",
+    backgroundColor: "#F0F7FF",
+  },
+  modelSourceChipText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333333",
+    marginBottom: 2,
+  },
+  modelSourceChipTextActive: {
+    color: "#007AFF",
+  },
+  modelSourceDesc: {
+    fontSize: 11,
+    color: "#8e8e93",
+  },
+  downloadSourceCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#e5e5ea",
+    padding: 16,
+  },
+  downloadSourceTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333333",
+    marginBottom: 12,
+  },
+  downloadSourceButton: {
+    marginTop: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    backgroundColor: "#007AFF",
+    borderRadius: 10,
+    alignItems: "center",
+  },
+  downloadSourceButtonText: {
+    color: "#ffffff",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  downloadSourceNote: {
+    fontSize: 11,
+    color: "#8e8e93",
+    textAlign: "center",
+    marginTop: 12,
+  },
+  downloadingIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 12,
+    gap: 8,
+  },
+  downloadingText: {
+    fontSize: 13,
+    color: "#007AFF",
+    fontWeight: "500",
   },
   downloadButton: {
     paddingVertical: 10,

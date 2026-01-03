@@ -2,6 +2,9 @@
 
 # dependencies
 node_modules/
+melo-tts-models/
+melo-tts-models.zip
+./.gitignore
 
 # Expo
 .expo/
