@@ -10,7 +10,11 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.EnglishApp"
+      "bundleIdentifier": "com.retentiontech.localvoiceassistant",
+      "appleTeamId": "H8V3CD3424",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -25,7 +29,7 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS"
       ],
-      "package": "com.anonymous.EnglishApp"
+      "package": "com.retentiontech.localvoiceassistant"
     },
     "web": {
       "output": "static",
@@ -66,6 +70,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "5b1bf313-1518-40cb-8df5-9d942d0badb4"
+      }
+    },
+    "owner": "chaitanya.terli"
   }
 }

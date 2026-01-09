@@ -1,123 +1,149 @@
 /**
  * Integrated Voice Assistant Hook
- * 
+ *
  * Low-latency pipeline: Speech → Transcription → LLM → TTS → Audio
- * 
+ *
  * Key optimizations:
  * 1. Sentence-level TTS processing during LLM streaming
  * 2. Audio queue for gapless playback
  * 3. Parallel TTS synthesis while audio plays
  */
-import { useState, useCallback, useRef, useEffect } from "react";
-import { useWhisperModels } from "./useWhisperModels";
-import { useLlamaModels, ChatMessage } from "./useLlamaModels";
-import { useMeloTTS, type ModelSource } from "./useMeloTTS";
-import { File, Paths, Directory } from "expo-file-system";
-import AudioModule from "expo-audio/build/AudioModule";
+import AudioModule from "expo-audio/build/AudioModule"
+import { File } from "expo-file-system"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { ChatMessage, useLlamaModels } from "./useLlamaModels"
+import { useMeloTTS, type ModelSource } from "./useMeloTTS"
+import { useWhisperModels } from "./useWhisperModels"
 
 // Helper to get formatted timestamp for logs
 const getTimestamp = () => {
-  const now = new Date();
-  return `[${now.toLocaleTimeString('en-US', { hour12: false })}.${now.getMilliseconds().toString().padStart(3, '0')}]`;
-};
+  const now = new Date()
+  return `[${now.toLocaleTimeString("en-US", { hour12: false })}.${now
+    .getMilliseconds()
+    .toString()
+    .padStart(3, "0")}]`
+}
 
 // Timestamped log helper
-const tLog = (...args: any[]) => console.log(getTimestamp(), ...args);
+const tLog = (...args: any[]) => console.log(getTimestamp(), ...args)
 
 // Pipeline states
-export type PipelineState = 
+export type PipelineState =
   | "idle"
   | "listening"
   | "transcribing"
   | "thinking"
   | "speaking"
-  | "error";
+  | "error"
 
 // Sentence in the TTS queue
 interface TTSQueueItem {
-  id: string;
-  text: string;
-  status: "pending" | "synthesizing" | "ready" | "playing" | "done";
-  audioPath?: string;
-  audioDuration?: number;
+  id: string
+  text: string
+  status: "pending" | "synthesizing" | "ready" | "playing" | "done"
+  audioPath?: string
+  audioDuration?: number
 }
 
 // Configuration for the assistant
 export interface VoiceAssistantConfig {
-  systemPrompt?: string;
-  minSentenceLength?: number;
-  maxConcurrentSynthesis?: number;
-  ttsSpeed?: number;
-  ttsNaturalness?: number;
+  systemPrompt?: string
+  minSentenceLength?: number
+  maxConcurrentSynthesis?: number
+  ttsSpeed?: number
+  ttsNaturalness?: number
   /** Playback rate for audio (0.5 to 2.0, default 1.0). Applied at native level with zero conversion overhead. */
-  playbackRate?: number;
+  playbackRate?: number
   /** TTS model source: 'default' (MeloTTS) or 'custom' (Custom trained model) */
-  ttsModelSource?: ModelSource;
+  ttsModelSource?: ModelSource
+  /** LLM model ID to use (default: 'gemma-2b-it') */
+  llamaModel?: string
+  /** Whisper model ID to use (default: 'tiny' for speed, 'base' for accuracy) */
+  whisperModel?: string
 }
 
 const DEFAULT_CONFIG: VoiceAssistantConfig = {
-  systemPrompt: "You are a helpful, friendly AI assistant. Keep your responses concise and conversational, suitable for voice interaction. Respond in 2-3 sentences when possible.",
-  minSentenceLength: 6,  // Reduced for phrase-level chunking
-  maxConcurrentSynthesis: 1,  // One at a time to reduce CPU competition
-  ttsSpeed: 1.0,
-  ttsNaturalness: 0.6,
-  playbackRate: 0.85,  // Slightly slower for better comprehension
-  ttsModelSource: 'default',  // MeloTTS Default
-};
+  systemPrompt:
+    "You are a helpful, friendly AI assistant. Keep your responses concise and conversational, suitable for voice interaction. Respond in 2-3 sentences when possible.",
+  minSentenceLength: 6, // Reduced for phrase-level chunking
+  maxConcurrentSynthesis: 1, // One at a time to reduce CPU competition
+  ttsSpeed: 1.2, // Slow mode for clearer speech
+  ttsNaturalness: 0.8, // Expressive mode
+  playbackRate: 1.0, // Normal playback speed
+  ttsModelSource: "default", // MeloTTS Default
+  llamaModel: "gemma-2b-it", // Default LLM model
+  whisperModel: "tiny", // Default Whisper model (fast)
+}
 
 // Minimum audio buffer (in seconds) before starting playback
-const MIN_AUDIO_BUFFER_SECONDS = 2.0;
+const MIN_AUDIO_BUFFER_SECONDS = 0.5
 
-// Phrase boundary punctuation - periods, exclamations, questions, commas, semicolons, colons
-const PHRASE_BREAK_PUNCTUATION = /[.!?,;:]/;
-// Conjunctions to split on (NOT 'and' - too common and breaks natural flow)
-const SPLIT_CONJUNCTIONS = /\b(but|or|so|because|although|however|therefore|meanwhile|furthermore)\b/i;
+// Phrase boundary punctuation - periods, questions, commas, semicolons, colons (NOT exclamation - too emphatic to break)
+const PHRASE_BREAK_PUNCTUATION = /[.?,;:]/
+
+// Pause durations (ms) between chunks based on ending punctuation
+const PAUSE_AFTER_SENTENCE = 250 // After . or ?
+const PAUSE_AFTER_COMMA = 100 // After , or ; or :
+// Conjunctions to split on (NOT 'and' or 'or' - too common and breaks natural flow)
+const SPLIT_CONJUNCTIONS =
+  /\b(but|so|because|although|however|therefore|meanwhile|furthermore)\b/i
 // Minimum words per phrase
-const MIN_WORDS_PER_PHRASE = 6;
+const MIN_WORDS_PER_PHRASE = 6
+// Maximum words for first chunk (to speed up time-to-first-audio)
+const MAX_FIRST_CHUNK_WORDS = 15
 
 export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
-  const mergedConfig = { ...DEFAULT_CONFIG, ...config };
-  
+  const mergedConfig = { ...DEFAULT_CONFIG, ...config }
+
   // Pipeline state
-  const [pipelineState, setPipelineState] = useState<PipelineState>("idle");
-  const [error, setError] = useState<string | null>(null);
-  
+  const [pipelineState, setPipelineState] = useState<PipelineState>("idle")
+  const [error, setError] = useState<string | null>(null)
+
   // Transcription state
-  const [currentTranscription, setCurrentTranscription] = useState<string>("");
-  const [finalTranscription, setFinalTranscription] = useState<string>("");
-  
+  const [currentTranscription, setCurrentTranscription] = useState<string>("")
+  const [finalTranscription, setFinalTranscription] = useState<string>("")
+
   // LLM state
-  const [llmResponse, setLlmResponse] = useState<string>("");
-  const [conversationHistory, setConversationHistory] = useState<ChatMessage[]>([]);
-  
+  const [llmResponse, setLlmResponse] = useState<string>("")
+  const [conversationHistory, setConversationHistory] = useState<ChatMessage[]>(
+    []
+  )
+
   // TTS queue state
-  const [ttsQueue, setTtsQueue] = useState<TTSQueueItem[]>([]);
-  const [currentPlayingId, setCurrentPlayingId] = useState<string | null>(null);
-  
+  const [ttsQueue, setTtsQueue] = useState<TTSQueueItem[]>([])
+  const [currentPlayingId, setCurrentPlayingId] = useState<string | null>(null)
+
   // Audio players pool
-  const audioPlayersRef = useRef<Map<string, any>>(new Map());
-  const synthesisAbortRef = useRef<boolean>(false);
-  const currentTranscriberRef = useRef<any>(null);
-  
+  const audioPlayersRef = useRef<Map<string, any>>(new Map())
+  const synthesisAbortRef = useRef<boolean>(false)
+  const currentTranscriberRef = useRef<any>(null)
+
   // Synchronous playback guard - prevents race conditions with async state updates
-  const isPlaybackInProgressRef = useRef<boolean>(false);
-  
+  const isPlaybackInProgressRef = useRef<boolean>(false)
+
+  // Ref-based playback queue for sequential processing (avoids useEffect race conditions)
+  const playbackQueueRef = useRef<TTSQueueItem[]>([])
+  const isPlaybackChainRunningRef = useRef<boolean>(false)
+
   // Accumulated text for sentence detection
-  const accumulatedTextRef = useRef<string>("");
-  const processedSentencesRef = useRef<Set<string>>(new Set());
-  const queueIdCounterRef = useRef<number>(0);
-  
+  const accumulatedTextRef = useRef<string>("")
+  const processedSentencesRef = useRef<Set<string>>(new Set())
+  const queueIdCounterRef = useRef<number>(0)
+  const isFirstChunkRef = useRef<boolean>(true) // Track if first chunk needs eager extraction
+
   // Hooks
-  const whisper = useWhisperModels();
-  const llama = useLlamaModels();
-  const tts = useMeloTTS();
+  const whisper = useWhisperModels()
+  const llama = useLlamaModels()
+  const tts = useMeloTTS()
 
   // Check if all models are ready
   const isReady = useCallback(() => {
-    return whisper.whisperContext !== null && 
-           llama.llamaContext !== null && 
-           tts.isReady();
-  }, [whisper.whisperContext, llama.llamaContext, tts]);
+    return (
+      whisper.whisperContext !== null &&
+      llama.llamaContext !== null &&
+      tts.isReady()
+    )
+  }, [whisper.whisperContext, llama.llamaContext, tts])
 
   // Get initialization status
   const getInitStatus = useCallback(() => {
@@ -128,107 +154,170 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       whisperModel: whisper.getCurrentModel()?.label || "Not loaded",
       llamaModel: llama.getCurrentModel()?.label || "Not loaded",
       ttsModel: tts.getCurrentModel()?.label || "Not loaded",
-    };
-  }, [whisper, llama, tts]);
+    }
+  }, [whisper, llama, tts])
 
   // Initialize all models
-  const initializeAll = useCallback(async (options?: {
-    whisperModel?: string;
-    llamaModel?: string;
-    ttsModel?: string;
-  }) => {
-    setError(null);
-    setPipelineState("idle");
-    
-    try {
-      // Initialize Whisper (use tiny for fastest transcription)
-      if (!whisper.whisperContext) {
-        tLog("Initializing Whisper...");
-        await whisper.initializeWhisperModel(options?.whisperModel || "tiny");
-      }
-      
-      // Initialize Llama
-      if (!llama.llamaContext) {
-        tLog("Initializing Llama...");
-        await llama.initializeLlamaModel(options?.llamaModel || "gemma-3-270m", {});
-      }
-      
-      // Initialize TTS (use FP32 - RTF ~0.9)
-      const ttsAlreadyReady = tts.isReady();
-      const currentModel = tts.getCurrentModel();
-      const ttsSource = mergedConfig.ttsModelSource || 'default';
-      tLog(`TTS Status: ready=${ttsAlreadyReady}, currentModel=${currentModel?.id || 'none'}, source=${ttsSource}`);
-      
-      if (!ttsAlreadyReady) {
-        tLog("Initializing TTS...");
-        // Switch to the selected source (downloads if needed)
-        await tts.switchModelSource(ttsSource);
-        
-        // Now refresh and check models
-        const models = await tts.refreshModelFiles(ttsSource);
-        tLog("Available TTS models:", Object.keys(models));
-        
-        // Use FP32 (RTF ~0.9) - pass source explicitly to avoid state timing issues
-        const availableTtsModel = options?.ttsModel || "melo-fp32";
-        tLog(`Loading TTS model: ${availableTtsModel} from source: ${ttsSource}`);
-        await tts.initializeModel(availableTtsModel, ttsSource);
-        tLog(`TTS initialized with: ${tts.getCurrentModel()?.id || 'unknown'}`);
-      } else {
-        // Check if we need to switch sources
-        if (tts.currentModelSource !== ttsSource) {
-          tLog(`Switching TTS source from ${tts.currentModelSource} to ${ttsSource}...`);
-          await tts.switchModelSource(ttsSource);
-          const availableTtsModel = options?.ttsModel || "melo-fp32";
-          // Pass source explicitly to avoid state timing issues
-          await tts.initializeModel(availableTtsModel, ttsSource);
-          tLog(`TTS re-initialized with: ${tts.getCurrentModel()?.id || 'unknown'}`);
-        } else {
-          tLog(`TTS already initialized with: ${currentModel?.id}`);
+  const initializeAll = useCallback(
+    async (options?: {
+      whisperModel?: string
+      llamaModel?: string
+      ttsModel?: string
+    }) => {
+      setError(null)
+      setPipelineState("idle")
+
+      try {
+        // Initialize Whisper
+        if (!whisper.whisperContext) {
+          const whisperModelId =
+            options?.whisperModel || mergedConfig.whisperModel || "tiny"
+          tLog(`Initializing Whisper with model: ${whisperModelId}...`)
+          await whisper.initializeWhisperModel(whisperModelId)
         }
+
+        // Initialize Llama
+        if (!llama.llamaContext) {
+          const llamaModelId =
+            options?.llamaModel || mergedConfig.llamaModel || "gemma-2b-it"
+          tLog(`Initializing Llama with model: ${llamaModelId}...`)
+          await llama.initializeLlamaModel(llamaModelId, {})
+        }
+
+        // Initialize TTS (use FP32 - RTF ~0.9)
+        const ttsAlreadyReady = tts.isReady()
+        const currentModel = tts.getCurrentModel()
+        const ttsSource = mergedConfig.ttsModelSource || "default"
+        tLog(
+          `TTS Status: ready=${ttsAlreadyReady}, currentModel=${
+            currentModel?.id || "none"
+          }, source=${ttsSource}`
+        )
+
+        if (!ttsAlreadyReady) {
+          tLog("Initializing TTS...")
+          // Switch to the selected source (downloads if needed)
+          await tts.switchModelSource(ttsSource)
+
+          // Now refresh and check models
+          const models = await tts.refreshModelFiles(ttsSource)
+          tLog("Available TTS models:", Object.keys(models))
+
+          // Use FP32 (RTF ~0.9) - pass source explicitly to avoid state timing issues
+          const availableTtsModel = options?.ttsModel || "melo-fp32"
+          tLog(
+            `Loading TTS model: ${availableTtsModel} from source: ${ttsSource}`
+          )
+          await tts.initializeModel(availableTtsModel, ttsSource)
+          tLog(
+            `TTS initialized with: ${tts.getCurrentModel()?.id || "unknown"}`
+          )
+        } else {
+          // Check if we need to switch sources
+          if (tts.currentModelSource !== ttsSource) {
+            tLog(
+              `Switching TTS source from ${tts.currentModelSource} to ${ttsSource}...`
+            )
+            await tts.switchModelSource(ttsSource)
+            const availableTtsModel = options?.ttsModel || "melo-fp32"
+            // Pass source explicitly to avoid state timing issues
+            await tts.initializeModel(availableTtsModel, ttsSource)
+            tLog(
+              `TTS re-initialized with: ${
+                tts.getCurrentModel()?.id || "unknown"
+              }`
+            )
+          } else {
+            tLog(`TTS already initialized with: ${currentModel?.id}`)
+          }
+        }
+
+        tLog("All models initialized!")
+        return true
+      } catch (err) {
+        const errorMsg = `Failed to initialize models: ${err}`
+        console.error(errorMsg)
+        setError(errorMsg)
+        return false
       }
-      
-      tLog("All models initialized!");
-      return true;
-    } catch (err) {
-      const errorMsg = `Failed to initialize models: ${err}`;
-      console.error(errorMsg);
-      setError(errorMsg);
-      return false;
-    }
-  }, [whisper, llama, tts, mergedConfig.ttsModelSource]);
+    },
+    [whisper, llama, tts, mergedConfig.ttsModelSource]
+  )
 
   // Switch TTS source at runtime (downloads if needed, then re-initializes)
-  const switchTTSSource = useCallback(async (newSource: ModelSource) => {
-    if (pipelineState !== 'idle') {
-      console.warn("Cannot switch TTS source while pipeline is active");
-      return false;
-    }
-    
-    try {
-      setError(null);
-      tLog(`Switching TTS source to: ${newSource}`);
-      
-      // Switch model source (downloads if needed)
-      await tts.switchModelSource(newSource);
-      
-      // Re-initialize with FP32 model from the new source
-      // Pass the source explicitly to avoid state timing issues
-      await tts.initializeModel("melo-fp32", newSource);
-      
-      tLog(`TTS switched to ${newSource} with model: ${tts.getCurrentModel()?.id || 'unknown'}`);
-      return true;
-    } catch (err) {
-      const errorMsg = `Failed to switch TTS source: ${err}`;
-      console.error(errorMsg);
-      setError(errorMsg);
-      return false;
-    }
-  }, [tts, pipelineState]);
+  const switchTTSSource = useCallback(
+    async (newSource: ModelSource) => {
+      if (pipelineState !== "idle") {
+        console.warn("Cannot switch TTS source while pipeline is active")
+        return false
+      }
+
+      try {
+        setError(null)
+        tLog(`Switching TTS source to: ${newSource}`)
+
+        // Switch model source (downloads if needed)
+        await tts.switchModelSource(newSource)
+
+        // Re-initialize with FP32 model from the new source
+        // Pass the source explicitly to avoid state timing issues
+        await tts.initializeModel("melo-fp32", newSource)
+
+        tLog(
+          `TTS switched to ${newSource} with model: ${
+            tts.getCurrentModel()?.id || "unknown"
+          }`
+        )
+        return true
+      } catch (err) {
+        const errorMsg = `Failed to switch TTS source: ${err}`
+        console.error(errorMsg)
+        setError(errorMsg)
+        return false
+      }
+    },
+    [tts, pipelineState]
+  )
+
+  // Switch LLM model at runtime (downloads if needed, then re-initializes)
+  const switchLLMModel = useCallback(
+    async (modelId: string) => {
+      if (pipelineState !== "idle") {
+        console.warn("Cannot switch LLM model while pipeline is active")
+        return false
+      }
+
+      try {
+        setError(null)
+        tLog(`Switching LLM model to: ${modelId}...`)
+
+        // Release existing context first
+        if (llama.llamaContext) {
+          await llama.releaseContext()
+        }
+
+        // Initialize the new model (downloads if needed)
+        await llama.initializeLlamaModel(modelId, {})
+
+        tLog(`LLM switched to: ${llama.getCurrentModel()?.label || modelId}`)
+        return true
+      } catch (err) {
+        const errorMsg = `Failed to switch LLM model: ${err}`
+        console.error(errorMsg)
+        setError(errorMsg)
+        return false
+      }
+    },
+    [llama, pipelineState]
+  )
 
   // Helper to count words in text
   const countWords = useCallback((text: string): number => {
-    return text.trim().split(/\s+/).filter(w => w.length > 0).length;
-  }, []);
+    return text
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w.length > 0).length
+  }, [])
 
   // Extract phrases from accumulated text for TTS
   // Rules:
@@ -236,451 +325,645 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
   // 2. Minimum 6 words per phrase
   // 3. Only break when we have >=6 words AND hit break punctuation or conjunction
   // 4. If last phrase has <6 words, keep accumulating
-  const extractSentences = useCallback((text: string): { sentences: string[]; remainder: string } => {
-    const phrases: string[] = [];
-    let currentPhrase = "";
-    let remainder = text;
-    
-    // Process character by character to find natural break points
-    let i = 0;
-    while (i < text.length) {
-      currentPhrase += text[i];
-      
-      // Check if we hit a break punctuation
-      const lastChar = text[i];
-      const isPunctuation = PHRASE_BREAK_PUNCTUATION.test(lastChar);
-      
-      // Look ahead for conjunction after space
-      let isConjunction = false;
-      if (text[i] === ' ' && i + 1 < text.length) {
-        const remainingText = text.substring(i + 1);
-        const conjMatch = remainingText.match(/^(but|or|so|because|although|however|therefore|meanwhile|furthermore)\b/i);
-        if (conjMatch) {
-          isConjunction = true;
-        }
-      }
-      
-      // Check if we should break here
-      if (isPunctuation || isConjunction) {
-        const wordCount = countWords(currentPhrase);
-        
-        // Only break if we have enough words
-        if (wordCount >= MIN_WORDS_PER_PHRASE) {
-          // For punctuation, include it; for conjunction, don't include the space
-          if (isPunctuation) {
-            phrases.push(currentPhrase.trim());
-            currentPhrase = "";
-          } else if (isConjunction) {
-            // Break before the conjunction
-            phrases.push(currentPhrase.trim());
-            currentPhrase = "";
+  // 5. First chunk: force break at 8 words for faster time-to-first-audio
+  const extractSentences = useCallback(
+    (text: string): { sentences: string[]; remainder: string } => {
+      const phrases: string[] = []
+      let currentPhrase = ""
+      let remainder = text
+      const isFirstChunk = isFirstChunkRef.current
+
+      // Process character by character to find natural break points
+      let i = 0
+      while (i < text.length) {
+        currentPhrase += text[i]
+
+        // Check if we hit a break punctuation
+        const lastChar = text[i]
+        const isPunctuation = PHRASE_BREAK_PUNCTUATION.test(lastChar)
+
+        // Look ahead for conjunction after space
+        let isConjunction = false
+        if (text[i] === " " && i + 1 < text.length) {
+          const remainingText = text.substring(i + 1)
+          const conjMatch = remainingText.match(
+            /^(but|so|because|although|however|therefore|meanwhile|furthermore)\b/i
+          )
+          if (conjMatch) {
+            isConjunction = true
           }
         }
-        // If not enough words, keep accumulating
+
+        const wordCount = countWords(currentPhrase)
+
+        // First chunk: force break at MAX_FIRST_CHUNK_WORDS even without punctuation
+        if (
+          isFirstChunk &&
+          phrases.length === 0 &&
+          wordCount >= MAX_FIRST_CHUNK_WORDS
+        ) {
+          // Find the last word boundary to break cleanly
+          const trimmed = currentPhrase.trim()
+          phrases.push(trimmed)
+          currentPhrase = ""
+          isFirstChunkRef.current = false // Mark first chunk as extracted
+          tLog(
+            `⚡ First chunk forced at ${wordCount} words for faster playback`
+          )
+        }
+        // Check if we should break here (normal rules)
+        else if (isPunctuation || isConjunction) {
+          // Only break if we have enough words
+          if (wordCount >= MIN_WORDS_PER_PHRASE) {
+            // For punctuation, include it; for conjunction, don't include the space
+            if (isPunctuation) {
+              phrases.push(currentPhrase.trim())
+              currentPhrase = ""
+              if (isFirstChunk) isFirstChunkRef.current = false
+            } else if (isConjunction) {
+              // Break before the conjunction
+              phrases.push(currentPhrase.trim())
+              currentPhrase = ""
+              if (isFirstChunk) isFirstChunkRef.current = false
+            }
+          }
+          // If not enough words, keep accumulating
+        }
+
+        i++
       }
-      
-      i++;
-    }
-    
-    // Whatever is left is the remainder
-    remainder = currentPhrase.trim();
-    
-    // If remainder has break punctuation at the end AND enough words, it's a complete phrase
-    if (remainder.length > 0) {
-      const lastCharOfRemainder = remainder[remainder.length - 1];
-      const endsWithPunctuation = PHRASE_BREAK_PUNCTUATION.test(lastCharOfRemainder);
-      const wordCount = countWords(remainder);
-      
-      if (endsWithPunctuation && wordCount >= MIN_WORDS_PER_PHRASE) {
-        phrases.push(remainder);
-        remainder = "";
+
+      // Whatever is left is the remainder
+      remainder = currentPhrase.trim()
+
+      // If remainder has break punctuation at the end AND enough words, it's a complete phrase
+      if (remainder.length > 0) {
+        const lastCharOfRemainder = remainder[remainder.length - 1]
+        const endsWithPunctuation =
+          PHRASE_BREAK_PUNCTUATION.test(lastCharOfRemainder)
+        const wordCount = countWords(remainder)
+
+        if (endsWithPunctuation && wordCount >= MIN_WORDS_PER_PHRASE) {
+          phrases.push(remainder)
+          remainder = ""
+          if (isFirstChunk) isFirstChunkRef.current = false
+        }
       }
-    }
-    
-    if (phrases.length > 0 || remainder.length > 0) {
-      tLog(`📊 Extracted ${phrases.length} phrases (${phrases.map(p => countWords(p) + 'w').join(', ')}), remainder: ${countWords(remainder)}w "${remainder.substring(0, 30)}${remainder.length > 30 ? '...' : ''}"`);
-    }
-    
-    return { sentences: phrases, remainder };
-  }, [countWords]);
+
+      if (phrases.length > 0 || remainder.length > 0) {
+        tLog(
+          `📊 Extracted ${phrases.length} phrases (${phrases
+            .map((p) => countWords(p) + "w")
+            .join(", ")}), remainder: ${countWords(
+            remainder
+          )}w "${remainder.substring(0, 30)}${
+            remainder.length > 30 ? "..." : ""
+          }"`
+        )
+      }
+
+      return { sentences: phrases, remainder }
+    },
+    [countWords]
+  )
 
   // Clean text for TTS - remove non-English characters and normalize
   const cleanTextForTTS = useCallback((text: string): string => {
+    // Remove special tags like <conv_completed/>
+    let cleaned = text.replace(/<[^>]+\/?>/g, "")
     // Remove non-ASCII characters (keeps English, numbers, punctuation)
-    let cleaned = text.replace(/[^\x00-\x7F]/g, ' ');
+    cleaned = cleaned.replace(/[^\x00-\x7F]/g, " ")
     // Remove extra whitespace
-    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+    cleaned = cleaned.replace(/\s+/g, " ").trim()
     // Remove any remaining control characters
-    cleaned = cleaned.replace(/[\x00-\x1F\x7F]/g, '');
+    cleaned = cleaned.replace(/[\x00-\x1F\x7F]/g, "")
     // Replace trailing punctuation (comma, semicolon, colon) with period for better TTS prosody
     // Keep ! and ? as they affect intonation
-    cleaned = cleaned.replace(/[,;:]$/, '.');
+    cleaned = cleaned.replace(/[,;:]$/, ".")
     // Ensure phrase ends with punctuation (add period if missing)
     if (cleaned.length > 0 && !/[.!?]$/.test(cleaned)) {
-      cleaned += '.';
+      cleaned += "."
     }
-    return cleaned;
-  }, []);
+    return cleaned
+  }, [])
 
   // Queue a phrase for TTS
-  const queueSentenceForTTS = useCallback((sentence: string) => {
-    // Clean the text first
-    const cleanedText = cleanTextForTTS(sentence);
-    
-    // Skip if too short or empty after cleaning
-    if (cleanedText.length < 3) {
-      tLog(`⏭️ Skipping too short phrase: "${sentence}"`);
-      return null;
-    }
-    
-    const id = `tts-${Date.now()}-${queueIdCounterRef.current++}`;
-    
-    const newItem: TTSQueueItem = {
-      id,
-      text: cleanedText,
-      status: "pending",
-    };
-    
-    tLog(`📝 Queuing phrase for TTS: "${cleanedText.substring(0, 50)}${cleanedText.length > 50 ? '...' : ''}"`);
-    
-    setTtsQueue(prev => [...prev, newItem]);
-    return id;
-  }, [cleanTextForTTS]);
+  const queueSentenceForTTS = useCallback(
+    (sentence: string) => {
+      // Clean the text first
+      const cleanedText = cleanTextForTTS(sentence)
+
+      // Skip if too short or empty after cleaning
+      if (cleanedText.length < 3) {
+        tLog(`⏭️ Skipping too short phrase: "${sentence}"`)
+        return null
+      }
+
+      const id = `tts-${Date.now()}-${queueIdCounterRef.current++}`
+
+      const newItem: TTSQueueItem = {
+        id,
+        text: cleanedText,
+        status: "pending",
+      }
+
+      tLog(
+        `📝 Queuing phrase for TTS: "${cleanedText.substring(0, 50)}${
+          cleanedText.length > 50 ? "..." : ""
+        }"`
+      )
+
+      setTtsQueue((prev) => [...prev, newItem])
+      return id
+    },
+    [cleanTextForTTS]
+  )
 
   // Synthesize a queued sentence
-  const synthesizeSentence = useCallback(async (item: TTSQueueItem): Promise<TTSQueueItem | null> => {
-    if (synthesisAbortRef.current) return null;
-    
-    try {
-      // Update status
-      setTtsQueue(prev => prev.map(i => 
-        i.id === item.id ? { ...i, status: "synthesizing" } : i
-      ));
-      
-      // Debug: Log current TTS model
-      const currentTTSModel = tts.getCurrentModel();
-      tLog(`🔊 Synthesizing with model: ${currentTTSModel?.label || 'UNKNOWN'} (${currentTTSModel?.id || 'no-id'})`);
-      tLog(`🔊 Text: "${item.text.substring(0, 30)}..."`);
-      tLog(`🔊 TTS Ready: ${tts.isReady()}`);
-      
-      // Get TTS directory
-      const directory = await tts.getModelDirectory();
-      const outputPath = new File(directory, `voice_${item.id}.wav`).uri;
-      
-      // Synthesize
-      const startTime = Date.now();
-      await tts.synthesizeToFile(item.text, outputPath, {
-        lengthScale: mergedConfig.ttsSpeed,
-        noiseScale: mergedConfig.ttsNaturalness,
-      });
-      const duration = (Date.now() - startTime) / 1000;
-      
-      tLog(`✅ Synthesized in ${duration.toFixed(2)}s: "${item.text.substring(0, 30)}..."`);
-      
-      // Update queue with audio path
-      const updatedItem: TTSQueueItem = {
-        ...item,
-        status: "ready",
-        audioPath: outputPath,
-        audioDuration: duration,
-      };
-      
-      setTtsQueue(prev => prev.map(i => 
-        i.id === item.id ? updatedItem : i
-      ));
-      
-      return updatedItem;
-    } catch (err) {
-      console.error(`TTS synthesis failed for "${item.text}":`, err);
-      setTtsQueue(prev => prev.map(i => 
-        i.id === item.id ? { ...i, status: "done" } : i
-      ));
-      return null;
-    }
-  }, [tts, mergedConfig]);
+  const synthesizeSentence = useCallback(
+    async (item: TTSQueueItem): Promise<TTSQueueItem | null> => {
+      if (synthesisAbortRef.current) return null
 
-  // Play audio for a TTS item
-  const playTTSItem = useCallback(async (item: TTSQueueItem) => {
-    if (!item.audioPath) return;
-    
-    // Synchronous guard - check and set immediately to prevent race conditions
-    if (isPlaybackInProgressRef.current) {
-      tLog(`⚠️ Playback already in progress, skipping: "${item.text.substring(0, 30)}..."`);
-      return;
-    }
-    isPlaybackInProgressRef.current = true;
-    
-    try {
-      setTtsQueue(prev => prev.map(i => 
-        i.id === item.id ? { ...i, status: "playing" } : i
-      ));
-      setCurrentPlayingId(item.id);
-      
-      tLog(`▶️ Playing: "${item.text.substring(0, 30)}..." at ${mergedConfig.playbackRate}x speed`);
-      
-      // Create audio player
-      const player = new AudioModule.AudioPlayer({ uri: item.audioPath }, 100, false);
-      audioPlayersRef.current.set(item.id, player);
-      
-      // Set playback rate (done at native level, zero latency overhead)
-      // 0.9 = 90% speed (slightly slower for better comprehension)
-      const playbackRate = mergedConfig.playbackRate ?? 0.85;
-      player.setPlaybackRate(playbackRate, 'high');
-      
-      // Play and wait for completion
-      // Adjust timeout based on playback rate (slower = longer duration)
-      const adjustedDuration = (item.audioDuration || 5) / playbackRate;
-      
-      await new Promise<void>((resolve) => {
-        // Start playback
-        player.play();
-        
-        // Track if we've already resolved to prevent double-resolve
-        let resolved = false;
-        const safeResolve = () => {
-          if (!resolved) {
-            resolved = true;
-            clearInterval(checkInterval);
-            resolve();
-          }
-        };
-        
-        // Wait a bit before checking player.playing to let playback actually start
-        // The player.playing property may return false immediately after play() is called
-        const initialDelay = 300; // ms to wait before starting to poll
-        
-        let checkInterval: ReturnType<typeof setInterval>;
-        
-        setTimeout(() => {
-          // After initial delay, start polling for completion
-          checkInterval = setInterval(() => {
-            // Check if player is still playing
-            if (!player.playing && !resolved) {
-              tLog(`🔇 Playback ended (detected via polling): "${item.text.substring(0, 20)}..."`);
-              safeResolve();
-            }
-          }, 150); // Poll every 150ms
-        }, initialDelay);
-        
-        // Also set a timeout based on estimated duration (adjusted for playback rate)
-        // This is the safety net in case polling doesn't work
-        setTimeout(() => {
-          if (!resolved) {
-            tLog(`⏱️ Playback timeout reached: "${item.text.substring(0, 20)}..."`);
-          }
-          safeResolve();
-        }, adjustedDuration * 1000 + 1000); // Add 1s buffer
-      });
-      
-      // Cleanup
-      player.remove();
-      audioPlayersRef.current.delete(item.id);
-      
-      setTtsQueue(prev => prev.map(i => 
-        i.id === item.id ? { ...i, status: "done" } : i
-      ));
-      setCurrentPlayingId(null);
-      
-      // Delete the audio file to save space
       try {
-        const file = new File(item.audioPath);
-        if (file.exists) file.delete();
-      } catch (e) {
-        console.warn("Failed to cleanup audio file:", e);
-      }
-      
-    } catch (err) {
-      console.error("Audio playback error:", err);
-      setCurrentPlayingId(null);
-    } finally {
-      // Always release the playback lock
-      isPlaybackInProgressRef.current = false;
-    }
-  }, [mergedConfig.playbackRate]);
+        // Update status
+        setTtsQueue((prev) =>
+          prev.map((i) =>
+            i.id === item.id ? { ...i, status: "synthesizing" } : i
+          )
+        )
 
-  // Process TTS queue - synthesize and play in order
-  const processTTSQueue = useCallback(async () => {
-    // This function is called whenever the queue changes
-    // It processes pending items and plays ready items in order
-  }, []);
+        // Debug: Log current TTS model
+        const currentTTSModel = tts.getCurrentModel()
+        tLog(
+          `🔊 Synthesizing with model: ${
+            currentTTSModel?.label || "UNKNOWN"
+          } (${currentTTSModel?.id || "no-id"})`
+        )
+        tLog(`🔊 Text: "${item.text.substring(0, 30)}..."`)
+        tLog(`🔊 TTS Ready: ${tts.isReady()}`)
 
-  // Effect to process TTS queue
-  useEffect(() => {
-    const processQueue = async () => {
-      // Find pending items to synthesize (up to maxConcurrentSynthesis)
-      const pendingItems = ttsQueue.filter(item => item.status === "pending");
-      const synthesizingCount = ttsQueue.filter(item => item.status === "synthesizing").length;
-      const playingCount = ttsQueue.filter(item => item.status === "playing").length;
-      const readyCount = ttsQueue.filter(item => item.status === "ready").length;
-      const availableSlots = (mergedConfig.maxConcurrentSynthesis || 1) - synthesizingCount;
-      
-      // Calculate total ready audio duration
-      const readyItems = ttsQueue.filter(item => item.status === "ready");
-      const totalReadyDuration = readyItems.reduce((sum, item) => sum + (item.audioDuration || 0), 0);
-      const hasEnoughBuffer = totalReadyDuration >= MIN_AUDIO_BUFFER_SECONDS;
-      const isLLMDone = pipelineState !== "thinking"; // LLM finished generating
-      
-      // Debug: Log queue state
-      if (ttsQueue.length > 0) {
-        tLog(`🎯 Queue: pending=${pendingItems.length}, synthesizing=${synthesizingCount}, ready=${readyCount} (${totalReadyDuration.toFixed(1)}s), playing=${playingCount}`);
+        // Get TTS directory
+        const directory = await tts.getModelDirectory()
+        const outputPath = new File(directory, `voice_${item.id}.wav`).uri
+
+        // Synthesize
+        const startTime = Date.now()
+        await tts.synthesizeToFile(item.text, outputPath, {
+          lengthScale: mergedConfig.ttsSpeed,
+          noiseScale: mergedConfig.ttsNaturalness,
+        })
+        const duration = (Date.now() - startTime) / 1000
+
+        tLog(
+          `✅ Synthesized in ${duration.toFixed(2)}s: "${item.text.substring(
+            0,
+            30
+          )}..."`
+        )
+
+        // Update queue with audio path
+        const updatedItem: TTSQueueItem = {
+          ...item,
+          status: "ready",
+          audioPath: outputPath,
+          audioDuration: duration,
+        }
+
+        setTtsQueue((prev) =>
+          prev.map((i) => (i.id === item.id ? updatedItem : i))
+        )
+
+        return updatedItem
+      } catch (err) {
+        console.error(`TTS synthesis failed for "${item.text}":`, err)
+        setTtsQueue((prev) =>
+          prev.map((i) => (i.id === item.id ? { ...i, status: "done" } : i))
+        )
+        return null
       }
-      
-      // Start synthesis for pending items (can synthesize while playing!)
-      for (let i = 0; i < Math.min(pendingItems.length, availableSlots); i++) {
-        tLog(`🚀 Starting synthesis for chunk while ${playingCount > 0 ? 'PLAYING' : 'idle'}`);
-        synthesizeSentence(pendingItems[i]);
-      }
-      
-      // Play ready items in order (if nothing is currently playing)
-      // Only start if we have enough buffer OR if LLM is done and no more pending
-      // Check BOTH state and ref - ref provides synchronous guard against race conditions
-      if (!currentPlayingId && !isPlaybackInProgressRef.current) {
-        const readyItem = ttsQueue.find(item => item.status === "ready");
-        if (readyItem) {
-          const shouldStartPlaying = hasEnoughBuffer || 
-                                     (isLLMDone && pendingItems.length === 0 && synthesizingCount === 0);
-          
-          if (shouldStartPlaying) {
-            tLog(`▶️ Starting playback (buffer: ${totalReadyDuration.toFixed(1)}s, llmDone: ${isLLMDone})`);
-            playTTSItem(readyItem);
-          } else {
-            tLog(`⏳ Waiting for ${MIN_AUDIO_BUFFER_SECONDS}s buffer (current: ${totalReadyDuration.toFixed(1)}s)`);
+    },
+    [tts, mergedConfig]
+  )
+
+  // Estimate audio duration from text (more reliable than synthesis time)
+  // TTS typically produces ~150 words/minute = 2.5 words/second
+  const estimateAudioDuration = useCallback((text: string): number => {
+    const wordCount = text
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w.length > 0).length
+    // Base estimate: 2.5 words per second, with minimum 0.5s
+    return Math.max(0.5, wordCount / 2.5)
+  }, [])
+
+  // Play a single audio item and wait for completion
+  const playSingleItem = useCallback(
+    async (item: TTSQueueItem): Promise<void> => {
+      if (!item.audioPath) return
+
+      try {
+        setTtsQueue((prev) =>
+          prev.map((i) => (i.id === item.id ? { ...i, status: "playing" } : i))
+        )
+        setCurrentPlayingId(item.id)
+
+        tLog(`▶️ Playing: "${item.text.substring(0, 30)}..."`)
+
+        // Create audio player
+        const player = new AudioModule.AudioPlayer(
+          { uri: item.audioPath },
+          100,
+          false
+        )
+        audioPlayersRef.current.set(item.id, player)
+
+        // Set playback rate
+        const playbackRate = mergedConfig.playbackRate ?? 1.0
+        player.setPlaybackRate(playbackRate, "high")
+
+        // Record start time, then start playback
+        const playStartTime = Date.now()
+        player.play()
+
+        // Wait briefly for player to load and get actual duration
+        await new Promise((r) => setTimeout(r, 50))
+
+        // Get ACTUAL audio duration from the player
+        let actualDuration = player.duration
+
+        // If duration is not available yet, poll for it (max 500ms)
+        if (!actualDuration || actualDuration <= 0) {
+          for (let i = 0; i < 10; i++) {
+            await new Promise((r) => setTimeout(r, 50))
+            actualDuration = player.duration
+            if (actualDuration && actualDuration > 0) break
           }
         }
+
+        // Fallback: estimate from word count if duration still unavailable
+        if (!actualDuration || actualDuration <= 0) {
+          const wordCount = item.text.trim().split(/\s+/).length
+          actualDuration = Math.max(0.5, wordCount / 2.5) * 1.2 // Account for slow TTS
+          tLog(
+            `⚠️ Duration unavailable, using fallback: ${actualDuration.toFixed(
+              2
+            )}s`
+          )
+        }
+
+        const adjustedDuration = actualDuration / playbackRate
+
+        // Calculate remaining wait time (subtract time already elapsed since play started)
+        const elapsedSincePlay = Date.now() - playStartTime
+        const waitTime = Math.max(0, adjustedDuration * 1000 - elapsedSincePlay)
+
+        tLog(
+          `⏱️ Duration: ${actualDuration.toFixed(
+            2
+          )}s, elapsed: ${elapsedSincePlay}ms, waiting: ${waitTime.toFixed(
+            0
+          )}ms`
+        )
+
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, waitTime)
+        })
+
+        // Cleanup player
+        try {
+          player.pause()
+        } catch (e) {
+          // Ignore - player might already be stopped
+        }
+        player.remove()
+        audioPlayersRef.current.delete(item.id)
+
+        // Mark as done
+        setTtsQueue((prev) =>
+          prev.map((i) => (i.id === item.id ? { ...i, status: "done" } : i))
+        )
+        setCurrentPlayingId(null)
+
+        // Delete the audio file to save space
+        try {
+          const file = new File(item.audioPath)
+          if (file.exists) file.delete()
+        } catch (e) {
+          console.warn("Failed to cleanup audio file:", e)
+        }
+      } catch (err) {
+        console.error("Audio playback error:", err)
+        setCurrentPlayingId(null)
+        // Mark as done even on error
+        setTtsQueue((prev) =>
+          prev.map((i) => (i.id === item.id ? { ...i, status: "done" } : i))
+        )
       }
-      
-      // Check if all items are done
-      const allDone = ttsQueue.length > 0 && ttsQueue.every(item => item.status === "done");
-      if (allDone && pipelineState === "speaking") {
-        setPipelineState("idle");
-        setTtsQueue([]);
+    },
+    [mergedConfig.playbackRate]
+  )
+
+  // Determine pause duration based on how the text ends
+  const getPauseDuration = useCallback((text: string): number => {
+    const trimmed = text.trim()
+    if (!trimmed) return 0
+    const lastChar = trimmed[trimmed.length - 1]
+
+    // Sentence endings get longer pause
+    if (lastChar === "." || lastChar === "?") {
+      return PAUSE_AFTER_SENTENCE
+    }
+    // Comma/clause breaks get shorter pause
+    if (lastChar === "," || lastChar === ";" || lastChar === ":") {
+      return PAUSE_AFTER_COMMA
+    }
+    // Exclamation or other - small pause
+    if (lastChar === "!") {
+      return PAUSE_AFTER_COMMA // Treat exclamation like comma (brief pause)
+    }
+    return 0
+  }, [])
+
+  // Sequential playback chain - processes items one by one without useEffect races
+  const runPlaybackChain = useCallback(async () => {
+    // Only one chain can run at a time
+    if (isPlaybackChainRunningRef.current) return
+    isPlaybackChainRunningRef.current = true
+    isPlaybackInProgressRef.current = true
+
+    tLog("🔗 Starting playback chain")
+
+    try {
+      let previousItemText: string | null = null
+
+      while (true) {
+        // Get next item from the ref-based queue
+        const nextItem = playbackQueueRef.current.shift()
+        if (!nextItem) break
+
+        // Add pause AFTER previous item based on its ending punctuation
+        if (previousItemText !== null) {
+          const pauseDuration = getPauseDuration(previousItemText)
+          if (pauseDuration > 0) {
+            tLog(
+              `⏸️ Pause: ${pauseDuration}ms after "${previousItemText.slice(
+                -10
+              )}"`
+            )
+            await new Promise((r) => setTimeout(r, pauseDuration))
+          }
+        }
+
+        tLog(`🎵 Chain playing item: "${nextItem.text.substring(0, 30)}..."`)
+        await playSingleItem(nextItem)
+
+        // Track this item for the next pause calculation
+        previousItemText = nextItem.text
       }
-    };
-    
-    processQueue();
-  }, [ttsQueue, currentPlayingId, pipelineState, mergedConfig.maxConcurrentSynthesis, synthesizeSentence, playTTSItem]);
+    } finally {
+      isPlaybackChainRunningRef.current = false
+      isPlaybackInProgressRef.current = false
+      tLog("🔗 Playback chain complete")
+    }
+  }, [playSingleItem, getPauseDuration])
+
+  // Add item to playback queue and start chain if not running
+  const enqueueForPlayback = useCallback(
+    (item: TTSQueueItem) => {
+      playbackQueueRef.current.push(item)
+      tLog(
+        `📥 Enqueued for playback: "${item.text.substring(
+          0,
+          30
+        )}..." (queue size: ${playbackQueueRef.current.length})`
+      )
+
+      // Start the chain if not already running
+      if (!isPlaybackChainRunningRef.current) {
+        runPlaybackChain()
+      }
+    },
+    [runPlaybackChain]
+  )
+
+  // Track which items have been enqueued for playback (to avoid double-enqueue)
+  const enqueuedItemsRef = useRef<Set<string>>(new Set())
+
+  // Effect to process TTS queue - handles synthesis and enqueues ready items
+  useEffect(() => {
+    // Find pending items to synthesize (up to maxConcurrentSynthesis)
+    const pendingItems = ttsQueue.filter((item) => item.status === "pending")
+    const synthesizingCount = ttsQueue.filter(
+      (item) => item.status === "synthesizing"
+    ).length
+    const playingCount = ttsQueue.filter(
+      (item) => item.status === "playing"
+    ).length
+    const readyItems = ttsQueue.filter((item) => item.status === "ready")
+    const availableSlots =
+      (mergedConfig.maxConcurrentSynthesis || 1) - synthesizingCount
+
+    // Calculate total ready audio duration for buffer check
+    const totalReadyDuration = readyItems.reduce(
+      (sum, item) => sum + estimateAudioDuration(item.text),
+      0
+    )
+    const hasEnoughBuffer = totalReadyDuration >= MIN_AUDIO_BUFFER_SECONDS
+    const isLLMDone = pipelineState !== "thinking"
+
+    // Debug: Log queue state
+    if (ttsQueue.length > 0) {
+      tLog(
+        `🎯 Queue: pending=${
+          pendingItems.length
+        }, synthesizing=${synthesizingCount}, ready=${
+          readyItems.length
+        } (${totalReadyDuration.toFixed(1)}s), playing=${playingCount}`
+      )
+    }
+
+    // Start synthesis for pending items (can synthesize while playing!)
+    for (let i = 0; i < Math.min(pendingItems.length, availableSlots); i++) {
+      tLog(
+        `🚀 Starting synthesis for chunk while ${
+          playingCount > 0 ? "PLAYING" : "idle"
+        }`
+      )
+      synthesizeSentence(pendingItems[i])
+    }
+
+    // Enqueue ready items for playback (only if not already enqueued)
+    // Check buffer condition: start when we have enough buffer OR LLM is done
+    const shouldStartPlayback =
+      hasEnoughBuffer ||
+      (isLLMDone && pendingItems.length === 0 && synthesizingCount === 0)
+
+    if (shouldStartPlayback) {
+      for (const item of readyItems) {
+        if (!enqueuedItemsRef.current.has(item.id)) {
+          enqueuedItemsRef.current.add(item.id)
+          enqueueForPlayback(item)
+        }
+      }
+    } else if (readyItems.length > 0) {
+      tLog(
+        `⏳ Waiting for ${MIN_AUDIO_BUFFER_SECONDS}s buffer (current: ${totalReadyDuration.toFixed(
+          1
+        )}s)`
+      )
+    }
+
+    // Check if all items are done
+    const allDone =
+      ttsQueue.length > 0 && ttsQueue.every((item) => item.status === "done")
+    if (allDone && pipelineState === "speaking") {
+      setPipelineState("idle")
+      setTtsQueue([])
+      enqueuedItemsRef.current.clear() // Reset for next conversation
+      isFirstChunkRef.current = true // Reset for next conversation
+    }
+  }, [
+    ttsQueue,
+    pipelineState,
+    mergedConfig.maxConcurrentSynthesis,
+    synthesizeSentence,
+    enqueueForPlayback,
+    estimateAudioDuration,
+  ])
 
   // Handle LLM token callback - detect sentences and queue for TTS
-  const handleLLMToken = useCallback((token: string) => {
-    // Accumulate the token
-    accumulatedTextRef.current += token;
-    setLlmResponse(accumulatedTextRef.current);
-    
-    // Check for complete sentences
-    const { sentences, remainder } = extractSentences(accumulatedTextRef.current);
-    
-    // Queue new sentences for TTS
-    for (const sentence of sentences) {
-      if (!processedSentencesRef.current.has(sentence)) {
-        processedSentencesRef.current.add(sentence);
-        queueSentenceForTTS(sentence);
+  const handleLLMToken = useCallback(
+    (token: string) => {
+      // Accumulate the token
+      accumulatedTextRef.current += token
+      setLlmResponse(accumulatedTextRef.current)
+
+      // Check for complete sentences
+      const { sentences, remainder } = extractSentences(
+        accumulatedTextRef.current
+      )
+
+      // Queue new sentences for TTS
+      for (const sentence of sentences) {
+        if (!processedSentencesRef.current.has(sentence)) {
+          processedSentencesRef.current.add(sentence)
+          queueSentenceForTTS(sentence)
+        }
       }
-    }
-    
-    // Update accumulated text to just the remainder
-    accumulatedTextRef.current = remainder;
-  }, [extractSentences, queueSentenceForTTS]);
+
+      // Update accumulated text to just the remainder
+      accumulatedTextRef.current = remainder
+    },
+    [extractSentences, queueSentenceForTTS]
+  )
 
   // Handle completion of LLM response
   const handleLLMComplete = useCallback(() => {
     // Queue any remaining text
-    const remainingText = accumulatedTextRef.current.trim();
-    if (remainingText.length > 0 && !processedSentencesRef.current.has(remainingText)) {
-      processedSentencesRef.current.add(remainingText);
-      queueSentenceForTTS(remainingText);
+    const remainingText = accumulatedTextRef.current.trim()
+    if (
+      remainingText.length > 0 &&
+      !processedSentencesRef.current.has(remainingText)
+    ) {
+      processedSentencesRef.current.add(remainingText)
+      queueSentenceForTTS(remainingText)
     }
-    
+
     // Clear accumulators
-    accumulatedTextRef.current = "";
-  }, [queueSentenceForTTS]);
+    accumulatedTextRef.current = ""
+  }, [queueSentenceForTTS])
 
   // Start listening for voice input
   const startListening = useCallback(async () => {
     if (!whisper.whisperContext) {
-      setError("Whisper not initialized");
-      return false;
+      setError("Whisper not initialized")
+      return false
     }
-    
+
     try {
-      setError(null);
-      setPipelineState("listening");
-      setCurrentTranscription("");
-      setFinalTranscription("");
-      setLlmResponse("");
-      setTtsQueue([]);
-      synthesisAbortRef.current = false;
-      accumulatedTextRef.current = "";
-      processedSentencesRef.current.clear();
-      
-      tLog("🎤 Starting voice input...");
-      
-      const { stop, subscribe } = await whisper.whisperContext.transcribeRealtime({
-        language: "en",
-        realtimeAudioSec: 60,
-        realtimeAudioSliceSec: 5,
-        realtimeAudioMinSec: 1,
-        audioSessionOnStartIos: {
-          category: "PlayAndRecord" as any,
-          options: ["MixWithOthers" as any],
-          mode: "Default" as any,
-        },
-        audioSessionOnStopIos: "restore" as any,
-      });
-      
-      currentTranscriberRef.current = { stop };
-      
+      setError(null)
+      setPipelineState("listening")
+      setCurrentTranscription("")
+      setFinalTranscription("")
+      setLlmResponse("")
+      setTtsQueue([])
+      synthesisAbortRef.current = false
+      accumulatedTextRef.current = ""
+      processedSentencesRef.current.clear()
+      playbackQueueRef.current = []
+      enqueuedItemsRef.current.clear()
+      isFirstChunkRef.current = true // Reset for eager first chunk extraction
+
+      tLog("🎤 Starting voice input...")
+
+      const { stop, subscribe } =
+        await whisper.whisperContext.transcribeRealtime({
+          language: "en",
+          realtimeAudioSec: 60,
+          realtimeAudioSliceSec: 5,
+          realtimeAudioMinSec: 1,
+          audioSessionOnStartIos: {
+            category: "PlayAndRecord" as any,
+            options: ["MixWithOthers" as any],
+            mode: "Default" as any,
+          },
+          audioSessionOnStopIos: "restore" as any,
+        })
+
+      currentTranscriberRef.current = { stop }
+
       subscribe((event: any) => {
-        const { isCapturing, data } = event;
-        
+        const { isCapturing, data } = event
+
         if (data?.result) {
-          const transcript = data.result.trim();
-          setCurrentTranscription(transcript);
-          tLog(`📝 Transcription: ${transcript}`);
+          const transcript = data.result.trim()
+          setCurrentTranscription(transcript)
+          tLog(`📝 Transcription: ${transcript}`)
         }
-      });
-      
-      return true;
+      })
+
+      return true
     } catch (err) {
-      const errorMsg = `Failed to start listening: ${err}`;
-      console.error(errorMsg);
-      setError(errorMsg);
-      setPipelineState("error");
-      return false;
+      const errorMsg = `Failed to start listening: ${err}`
+      console.error(errorMsg)
+      setError(errorMsg)
+      setPipelineState("error")
+      return false
     }
-  }, [whisper.whisperContext]);
+  }, [whisper.whisperContext])
 
   // Stop listening and process the transcription
   const stopListeningAndProcess = useCallback(async () => {
     try {
       // Stop transcription
       if (currentTranscriberRef.current?.stop) {
-        await currentTranscriberRef.current.stop();
-        currentTranscriberRef.current = null;
+        await currentTranscriberRef.current.stop()
+        currentTranscriberRef.current = null
       }
-      
-      const finalText = currentTranscription.trim();
-      setFinalTranscription(finalText);
-      
+
+      const finalText = currentTranscription.trim()
+      setFinalTranscription(finalText)
+
       if (!finalText) {
-        tLog("No transcription captured");
-        setPipelineState("idle");
-        return;
+        tLog("No transcription captured")
+        setPipelineState("idle")
+        return
       }
-      
-      tLog(`🎯 Final transcription: "${finalText}"`);
-      
+
+      tLog(`🎯 Final transcription: "${finalText}"`)
+
       // Transition to thinking state
-      setPipelineState("thinking");
-      
+      setPipelineState("thinking")
+
       // Add user message to history
       const userMessage: ChatMessage = {
         role: "user",
         content: finalText,
-      };
-      
-      const newHistory = [...conversationHistory, userMessage];
-      setConversationHistory(newHistory);
-      
+      }
+
+      const newHistory = [...conversationHistory, userMessage]
+      setConversationHistory(newHistory)
+
       // Build messages for LLM
       const messages: ChatMessage[] = [
         {
@@ -688,158 +971,270 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
           content: mergedConfig.systemPrompt || DEFAULT_CONFIG.systemPrompt!,
         },
         ...newHistory,
-      ];
-      
+      ]
+
       // Start LLM completion with streaming
-      tLog("🤖 Starting LLM completion...");
-      setPipelineState("speaking"); // Transition to speaking as we'll start TTS soon
-      
-      const response = await llama.completion(messages, handleLLMToken);
-      
+      tLog("🤖 Starting LLM completion...")
+      setPipelineState("speaking") // Transition to speaking as we'll start TTS soon
+
+      const response = await llama.completion(messages, handleLLMToken)
+
       // Handle completion
-      handleLLMComplete();
-      
+      handleLLMComplete()
+
       // Add assistant response to history
       const assistantMessage: ChatMessage = {
         role: "assistant",
         content: response,
-      };
-      setConversationHistory(prev => [...prev, assistantMessage]);
-      
-      tLog("✅ LLM response complete");
-      
+      }
+      setConversationHistory((prev) => [...prev, assistantMessage])
+
+      tLog("✅ LLM response complete")
     } catch (err) {
-      const errorMsg = `Processing failed: ${err}`;
-      console.error(errorMsg);
-      setError(errorMsg);
-      setPipelineState("error");
+      const errorMsg = `Processing failed: ${err}`
+      console.error(errorMsg)
+      setError(errorMsg)
+      setPipelineState("error")
     }
-  }, [currentTranscription, conversationHistory, llama, mergedConfig.systemPrompt, handleLLMToken, handleLLMComplete]);
+  }, [
+    currentTranscription,
+    conversationHistory,
+    llama,
+    mergedConfig.systemPrompt,
+    handleLLMToken,
+    handleLLMComplete,
+  ])
 
   // Send a text message (skip transcription, go directly to LLM)
-  const sendTextMessage = useCallback(async (text: string) => {
-    const trimmedText = text.trim();
-    if (!trimmedText) {
-      tLog("Empty text message, ignoring");
-      return;
-    }
-    
-    if (pipelineState !== "idle") {
-      console.log("Pipeline busy, cannot send text");
-      return;
-    }
-    
-    try {
-      setError(null);
-      setFinalTranscription(trimmedText);
-      setLlmResponse("");
-      setTtsQueue([]);
-      synthesisAbortRef.current = false;
-      accumulatedTextRef.current = "";
-      processedSentencesRef.current.clear();
-      
-      console.log(`💬 Text message: "${trimmedText}"`);
-      
-      // Transition to thinking state
-      setPipelineState("thinking");
-      
-      // Add user message to history
-      const userMessage: ChatMessage = {
-        role: "user",
-        content: trimmedText,
-      };
-      
-      const newHistory = [...conversationHistory, userMessage];
-      setConversationHistory(newHistory);
-      
-      // Build messages for LLM
-      const messages: ChatMessage[] = [
-        {
-          role: "system",
-          content: mergedConfig.systemPrompt || DEFAULT_CONFIG.systemPrompt!,
-        },
-        ...newHistory,
-      ];
-      
-      // Start LLM completion with streaming
-      tLog("🤖 Starting LLM completion...");
-      setPipelineState("speaking");
-      
-      const response = await llama.completion(messages, handleLLMToken);
-      
-      // Handle completion
-      handleLLMComplete();
-      
-      // Add assistant response to history
-      const assistantMessage: ChatMessage = {
-        role: "assistant",
-        content: response,
-      };
-      setConversationHistory(prev => [...prev, assistantMessage]);
-      
-      tLog("✅ LLM response complete");
-      
-    } catch (err) {
-      const errorMsg = `Text processing failed: ${err}`;
-      console.error(errorMsg);
-      setError(errorMsg);
-      setPipelineState("error");
-    }
-  }, [pipelineState, conversationHistory, llama, mergedConfig.systemPrompt, handleLLMToken, handleLLMComplete]);
+  const sendTextMessage = useCallback(
+    async (text: string) => {
+      const trimmedText = text.trim()
+      if (!trimmedText) {
+        tLog("Empty text message, ignoring")
+        return
+      }
+
+      if (pipelineState !== "idle") {
+        console.log("Pipeline busy, cannot send text")
+        return
+      }
+
+      try {
+        setError(null)
+        setFinalTranscription(trimmedText)
+        setLlmResponse("")
+        setTtsQueue([])
+        synthesisAbortRef.current = false
+        accumulatedTextRef.current = ""
+        processedSentencesRef.current.clear()
+        playbackQueueRef.current = []
+        enqueuedItemsRef.current.clear()
+        isFirstChunkRef.current = true // Reset for eager first chunk extraction
+
+        console.log(`💬 Text message: "${trimmedText}"`)
+
+        // Transition to thinking state
+        setPipelineState("thinking")
+
+        // Add user message to history
+        const userMessage: ChatMessage = {
+          role: "user",
+          content: trimmedText,
+        }
+
+        const newHistory = [...conversationHistory, userMessage]
+        setConversationHistory(newHistory)
+
+        // Build messages for LLM
+        const messages: ChatMessage[] = [
+          {
+            role: "system",
+            content: mergedConfig.systemPrompt || DEFAULT_CONFIG.systemPrompt!,
+          },
+          ...newHistory,
+        ]
+
+        // Start LLM completion with streaming
+        tLog("🤖 Starting LLM completion...")
+        setPipelineState("speaking")
+
+        const response = await llama.completion(messages, handleLLMToken)
+
+        // Handle completion
+        handleLLMComplete()
+
+        // Add assistant response to history
+        const assistantMessage: ChatMessage = {
+          role: "assistant",
+          content: response,
+        }
+        setConversationHistory((prev) => [...prev, assistantMessage])
+
+        tLog("✅ LLM response complete")
+      } catch (err) {
+        const errorMsg = `Text processing failed: ${err}`
+        console.error(errorMsg)
+        setError(errorMsg)
+        setPipelineState("error")
+      }
+    },
+    [
+      pipelineState,
+      conversationHistory,
+      llama,
+      mergedConfig.systemPrompt,
+      handleLLMToken,
+      handleLLMComplete,
+    ]
+  )
 
   // Cancel current operation
   const cancel = useCallback(async () => {
-    synthesisAbortRef.current = true;
-    isPlaybackInProgressRef.current = false; // Reset playback lock
-    
+    synthesisAbortRef.current = true
+    isPlaybackInProgressRef.current = false // Reset playback lock
+    isPlaybackChainRunningRef.current = false // Stop playback chain
+
+    // Clear playback queue
+    playbackQueueRef.current = []
+    enqueuedItemsRef.current.clear()
+    isFirstChunkRef.current = true // Reset for next conversation
+
     // Stop transcription
     if (currentTranscriberRef.current?.stop) {
       try {
-        await currentTranscriberRef.current.stop();
+        await currentTranscriberRef.current.stop()
       } catch (e) {
-        console.warn("Error stopping transcription:", e);
+        console.warn("Error stopping transcription:", e)
       }
-      currentTranscriberRef.current = null;
+      currentTranscriberRef.current = null
     }
-    
+
     // Stop all audio
     audioPlayersRef.current.forEach((player, id) => {
       try {
-        player.pause();
-        player.remove();
+        player.pause()
+        player.remove()
       } catch (e) {
-        console.warn("Error stopping audio player:", e);
+        console.warn("Error stopping audio player:", e)
       }
-    });
-    audioPlayersRef.current.clear();
-    
+    })
+    audioPlayersRef.current.clear()
+
     // Stop TTS
-    tts.stopAudio();
-    
+    tts.stopAudio()
+
     // Reset state
-    setPipelineState("idle");
-    setCurrentTranscription("");
-    setLlmResponse("");
-    setTtsQueue([]);
-    setCurrentPlayingId(null);
-    
-    console.log("🛑 Pipeline cancelled");
-  }, [tts]);
+    setPipelineState("idle")
+    setCurrentTranscription("")
+    setLlmResponse("")
+    setTtsQueue([])
+    setCurrentPlayingId(null)
+
+    console.log("🛑 Pipeline cancelled")
+  }, [tts])
 
   // Clear conversation history
   const clearHistory = useCallback(() => {
-    setConversationHistory([]);
-    setFinalTranscription("");
-    setLlmResponse("");
-    console.log("📜 Conversation history cleared");
-  }, []);
+    setConversationHistory([])
+    setFinalTranscription("")
+    setLlmResponse("")
+    console.log("📜 Conversation history cleared")
+  }, [])
+
+  // Synthesize and play a single phrase (for initial greetings, etc.)
+  const synthesizeAndPlay = useCallback(
+    async (text: string): Promise<void> => {
+      if (!tts.isReady()) {
+        throw new Error("TTS not ready")
+      }
+
+      const cleanedText = cleanTextForTTS(text)
+      if (cleanedText.length < 3) return
+
+      try {
+        setPipelineState("speaking")
+
+        // Get TTS directory and create output path
+        const directory = await tts.getModelDirectory()
+        const outputPath = new File(
+          directory,
+          `voice_greeting_${Date.now()}.wav`
+        ).uri
+
+        // Synthesize
+        await tts.synthesizeToFile(cleanedText, outputPath, {
+          lengthScale: mergedConfig.ttsSpeed,
+          noiseScale: mergedConfig.ttsNaturalness,
+        })
+
+        // Play the audio
+        const player = new AudioModule.AudioPlayer(
+          { uri: outputPath },
+          100,
+          false
+        )
+
+        const playbackRate = mergedConfig.playbackRate ?? 1.0
+        player.setPlaybackRate(playbackRate, "high")
+
+        player.play()
+
+        // Wait for player to load and get duration
+        await new Promise((r) => setTimeout(r, 50))
+        let duration = player.duration
+        if (!duration || duration <= 0) {
+          for (let i = 0; i < 10; i++) {
+            await new Promise((r) => setTimeout(r, 50))
+            duration = player.duration
+            if (duration && duration > 0) break
+          }
+        }
+
+        // Fallback duration estimate
+        if (!duration || duration <= 0) {
+          const wordCount = cleanedText.trim().split(/\s+/).length
+          duration = Math.max(0.5, wordCount / 2.5)
+        }
+
+        // Wait for playback to complete
+        const adjustedDuration = duration / playbackRate
+        await new Promise((resolve) =>
+          setTimeout(resolve, adjustedDuration * 1000)
+        )
+
+        // Cleanup
+        try {
+          player.pause()
+        } catch (e) {}
+        player.remove()
+
+        try {
+          const file = new File(outputPath)
+          if (file.exists) file.delete()
+        } catch (e) {}
+
+        setPipelineState("idle")
+      } catch (err) {
+        console.error("synthesizeAndPlay error:", err)
+        setPipelineState("idle")
+        throw err
+      }
+    },
+    [
+      tts,
+      cleanTextForTTS,
+      mergedConfig.ttsSpeed,
+      mergedConfig.ttsNaturalness,
+      mergedConfig.playbackRate,
+    ]
+  )
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      cancel();
-    };
-  }, []);
+      cancel()
+    }
+  }, [])
 
   return {
     // State
@@ -851,29 +1246,30 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     conversationHistory,
     ttsQueue,
     currentPlayingId,
-    
+
     // Status
     isReady,
     getInitStatus,
-    
+
     // Model loading states
     isWhisperLoading: whisper.isInitializingModel || whisper.isDownloading,
     isLlamaLoading: llama.isInitializingModel || llama.isDownloading,
     isTTSLoading: tts.isInitializingModel || tts.isDownloading,
-    
+
     // Actions
     initializeAll,
     startListening,
     stopListeningAndProcess,
     sendTextMessage,
+    synthesizeAndPlay,
     cancel,
     clearHistory,
     switchTTSSource,
-    
+    switchLLMModel,
+
     // Individual hooks access (for advanced usage)
     whisper,
     llama,
     tts,
-  };
+  }
 }
-

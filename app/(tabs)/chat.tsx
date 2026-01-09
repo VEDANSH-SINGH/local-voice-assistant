@@ -53,7 +53,7 @@ export default function ChatScreen() {
     }
   }, []);
 
-  const initializeModel = async (modelId: string = "gemma-3-270m", forceRedownload: boolean = false) => {
+  const initializeModel = async (modelId: string = "gemma-2b-it", forceRedownload: boolean = false) => {
     try {
       setError("");
       await initializeLlamaModel(modelId, { forceRedownload });
@@ -187,7 +187,7 @@ export default function ChatScreen() {
   };
 
   const activeModelLabel = getCurrentModel()?.label || "Model";
-  const downloadPercentage = getDownloadProgress("gemma-3-270m") ?? 0;
+  const downloadPercentage = getDownloadProgress("gemma-2b-it") ?? 0;
   const modelStatusText = isDownloading
     ? `Downloading ${activeModelLabel} · ${(downloadPercentage * 100).toFixed(0)}%`
     : isInitializingModel

@@ -1,25 +1,25 @@
-import React, { useState, useEffect, useRef } from "react";
-import { StatusBar } from "expo-status-bar";
-import {
-  StyleSheet,
-  Text,
-  View,
-  TouchableOpacity,
-  ScrollView,
-  Alert,
-  ActivityIndicator,
-  Animated,
-  Platform,
-  TextInput,
-  KeyboardAvoidingView,
-} from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { LLAMA_MODELS } from "@/hooks/useLlamaModels";
+import { type ModelSource } from "@/hooks/useMeloTTS";
+import { PipelineState, useVoiceAssistant } from "@/hooks/useVoiceAssistant";
 import {
   getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
 } from "expo-audio";
-import { useVoiceAssistant, PipelineState } from "@/hooks/useVoiceAssistant";
-import { type ModelSource } from "@/hooks/useMeloTTS";
+import { StatusBar } from "expo-status-bar";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 // Color palette - Deep navy with coral accent
 const COLORS = {
@@ -50,8 +50,10 @@ export default function VoiceAssistantScreen() {
   const [inputMode, setInputMode] = useState<"voice" | "text">("voice");
   const [textInput, setTextInput] = useState("");
   const [ttsModelSource, setTtsModelSource] = useState<ModelSource>('default');
+  const [selectedLLMModel, setSelectedLLMModel] = useState<string>('gemma-2b-it');
   const [showSettings, setShowSettings] = useState(false);
-  
+  const [showLLMPicker, setShowLLMPicker] = useState(false);
+
   const {
     pipelineState,
     error,
@@ -72,10 +74,13 @@ export default function VoiceAssistantScreen() {
     cancel,
     clearHistory,
     switchTTSSource,
+    switchLLMModel,
     tts,
+    llama,
   } = useVoiceAssistant({
     systemPrompt: "You are a helpful, friendly voice assistant. Keep responses concise and natural for spoken conversation. Aim for 2-3 sentences per response.",
     ttsModelSource,
+    llamaModel: selectedLLMModel,
   });
 
   const scrollViewRef = useRef<ScrollView>(null);
@@ -143,9 +148,9 @@ export default function VoiceAssistantScreen() {
 
     try {
       let status = await getRecordingPermissionsAsync();
-      
+
       if (status.granted) return true;
-      
+
       if (!status.canAskAgain) {
         Alert.alert(
           "Microphone Access Required",
@@ -153,7 +158,7 @@ export default function VoiceAssistantScreen() {
         );
         return false;
       }
-      
+
       status = await requestRecordingPermissionsAsync();
       return status.granted;
     } catch (err) {
@@ -217,7 +222,7 @@ export default function VoiceAssistantScreen() {
     if (!ready) {
       return { label: "Initialize", disabled: false, style: styles.buttonSecondary };
     }
-    
+
     switch (pipelineState) {
       case "idle":
         return { label: "Hold to Speak", disabled: false, style: styles.buttonPrimary };
@@ -234,14 +239,14 @@ export default function VoiceAssistantScreen() {
   const buttonConfig = getButtonConfig();
 
   // Calculate TTS progress
-  const ttsProgress = ttsQueue.length > 0 
-    ? ttsQueue.filter(i => i.status === "done" || i.status === "playing").length / ttsQueue.length 
+  const ttsProgress = ttsQueue.length > 0
+    ? ttsQueue.filter(i => i.status === "done" || i.status === "playing").length / ttsQueue.length
     : 0;
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
-      
+
       {/* Header */}
       <View style={styles.header}>
         <View>
@@ -289,7 +294,7 @@ export default function VoiceAssistantScreen() {
 
       {/* TTS Voice Model Selector */}
       <View style={styles.voiceModelSection}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.voiceModelHeader}
           onPress={() => setShowSettings(!showSettings)}
         >
@@ -298,68 +303,178 @@ export default function VoiceAssistantScreen() {
           </Text>
           <Text style={styles.voiceModelToggle}>{showSettings ? '▲' : '▼'}</Text>
         </TouchableOpacity>
-        
+
         {showSettings && (
           <View style={styles.voiceModelOptions}>
-            <TouchableOpacity
-              style={[
-                styles.voiceModelChip,
-                tts.currentModelSource === 'default' && styles.voiceModelChipActive,
-              ]}
-              onPress={async () => {
-                if (tts.currentModelSource !== 'default') {
-                  setTtsModelSource('default');
-                  await switchTTSSource('default');
-                }
-              }}
-              disabled={isLoading || pipelineState !== 'idle'}
-            >
-              {isTTSLoading && ttsModelSource === 'default' ? (
-                <ActivityIndicator size="small" color={COLORS.success} />
-              ) : (
-                <>
-                  <Text style={[
-                    styles.voiceModelChipText,
-                    tts.currentModelSource === 'default' && styles.voiceModelChipTextActive,
-                  ]}>
-                    MeloTTS FP32
-                  </Text>
-                  <Text style={styles.voiceModelChipDesc}>
-                    {tts.downloadedSources.default ? '✓ Ready' : 'Will download'}
-                  </Text>
-                </>
+            <View style={styles.voiceModelRow}>
+              <TouchableOpacity
+                style={[
+                  styles.voiceModelChip,
+                  styles.voiceModelChipFlex,
+                  tts.currentModelSource === 'default' && styles.voiceModelChipActive,
+                ]}
+                onPress={async () => {
+                  if (tts.currentModelSource !== 'default') {
+                    setTtsModelSource('default');
+                    await switchTTSSource('default');
+                  }
+                }}
+                disabled={isLoading || pipelineState !== 'idle'}
+              >
+                {isTTSLoading && ttsModelSource === 'default' ? (
+                  <ActivityIndicator size="small" color={COLORS.success} />
+                ) : (
+                  <>
+                    <Text style={[
+                      styles.voiceModelChipText,
+                      tts.currentModelSource === 'default' && styles.voiceModelChipTextActive,
+                    ]}>
+                      MeloTTS FP32
+                    </Text>
+                    <Text style={styles.voiceModelChipDesc}>
+                      {tts.downloadedSources.default ? '✓ Ready' : 'Will download'}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+              {tts.downloadedSources.default && (
+                <TouchableOpacity
+                  style={styles.deleteModelButton}
+                  onPress={() => {
+                    Alert.alert(
+                      "Delete MeloTTS Model",
+                      "This will delete the downloaded TTS model files. You can re-download later.",
+                      [
+                        { text: "Cancel", style: "cancel" },
+                        {
+                          text: "Delete",
+                          style: "destructive",
+                          onPress: async () => {
+                            await tts.deleteModelSource('default');
+                          },
+                        },
+                      ]
+                    );
+                  }}
+                  disabled={isLoading || pipelineState !== 'idle'}
+                >
+                  <Text style={styles.deleteModelButtonText}>🗑️</Text>
+                </TouchableOpacity>
               )}
-            </TouchableOpacity>
-            
-            <TouchableOpacity
-              style={[
-                styles.voiceModelChip,
-                tts.currentModelSource === 'custom' && styles.voiceModelChipActive,
-              ]}
-              onPress={async () => {
-                if (tts.currentModelSource !== 'custom') {
-                  setTtsModelSource('custom');
-                  await switchTTSSource('custom');
-                }
-              }}
-              disabled={isLoading || pipelineState !== 'idle'}
-            >
-              {isTTSLoading && ttsModelSource === 'custom' ? (
-                <ActivityIndicator size="small" color={COLORS.success} />
-              ) : (
-                <>
-                  <Text style={[
-                    styles.voiceModelChipText,
-                    tts.currentModelSource === 'custom' && styles.voiceModelChipTextActive,
-                  ]}>
-                    Custom FP32
-                  </Text>
-                  <Text style={styles.voiceModelChipDesc}>
-                    {tts.downloadedSources.custom ? '✓ Ready' : 'Will download'}
-                  </Text>
-                </>
+            </View>
+
+            <View style={styles.voiceModelRow}>
+              <TouchableOpacity
+                style={[
+                  styles.voiceModelChip,
+                  styles.voiceModelChipFlex,
+                  tts.currentModelSource === 'custom' && styles.voiceModelChipActive,
+                ]}
+                onPress={async () => {
+                  if (tts.currentModelSource !== 'custom') {
+                    setTtsModelSource('custom');
+                    await switchTTSSource('custom');
+                  }
+                }}
+                disabled={isLoading || pipelineState !== 'idle'}
+              >
+                {isTTSLoading && ttsModelSource === 'custom' ? (
+                  <ActivityIndicator size="small" color={COLORS.success} />
+                ) : (
+                  <>
+                    <Text style={[
+                      styles.voiceModelChipText,
+                      tts.currentModelSource === 'custom' && styles.voiceModelChipTextActive,
+                    ]}>
+                      Custom FP32
+                    </Text>
+                    <Text style={styles.voiceModelChipDesc}>
+                      {tts.downloadedSources.custom ? '✓ Ready' : 'Will download'}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+              {tts.downloadedSources.custom && (
+                <TouchableOpacity
+                  style={styles.deleteModelButton}
+                  onPress={() => {
+                    Alert.alert(
+                      "Delete Custom TTS Model",
+                      "This will delete the downloaded custom TTS model files. You can re-download later.",
+                      [
+                        { text: "Cancel", style: "cancel" },
+                        {
+                          text: "Delete",
+                          style: "destructive",
+                          onPress: async () => {
+                            await tts.deleteModelSource('custom');
+                          },
+                        },
+                      ]
+                    );
+                  }}
+                  disabled={isLoading || pipelineState !== 'idle'}
+                >
+                  <Text style={styles.deleteModelButtonText}>🗑️</Text>
+                </TouchableOpacity>
               )}
-            </TouchableOpacity>
+            </View>
+          </View>
+        )}
+      </View>
+
+      {/* LLM Model Selector */}
+      <View style={styles.voiceModelSection}>
+        <TouchableOpacity
+          style={styles.voiceModelHeader}
+          onPress={() => setShowLLMPicker(!showLLMPicker)}
+        >
+          <Text style={styles.voiceModelTitle}>
+            🧠 AI Model: {llama.getCurrentModel()?.label || selectedLLMModel}
+          </Text>
+          <Text style={styles.voiceModelToggle}>{showLLMPicker ? '▲' : '▼'}</Text>
+        </TouchableOpacity>
+
+        {showLLMPicker && (
+          <View style={styles.llmModelOptions}>
+            {LLAMA_MODELS.map((model) => {
+              const isActive = llama.currentModelId === model.id;
+              const isDownloaded = llama.modelFiles[model.id] !== undefined;
+              const isCurrentlyLoading = isLlamaLoading && selectedLLMModel === model.id;
+
+              return (
+                <TouchableOpacity
+                  key={model.id}
+                  style={[
+                    styles.llmModelChip,
+                    isActive && styles.llmModelChipActive,
+                  ]}
+                  onPress={async () => {
+                    if (llama.currentModelId !== model.id) {
+                      setSelectedLLMModel(model.id);
+                      await switchLLMModel(model.id);
+                    }
+                  }}
+                  disabled={isLoading || pipelineState !== 'idle'}
+                >
+                  {isCurrentlyLoading ? (
+                    <ActivityIndicator size="small" color={COLORS.primary} />
+                  ) : (
+                    <>
+                      <Text style={[
+                        styles.llmModelChipText,
+                        isActive && styles.llmModelChipTextActive,
+                      ]}>
+                        {model.label}
+                      </Text>
+                      <Text style={styles.llmModelChipDesc}>
+                        {model.size} · {isDownloaded ? '✓ Ready' : 'Will download'}
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              );
+            })}
           </View>
         )}
       </View>
@@ -387,7 +502,7 @@ export default function VoiceAssistantScreen() {
               {ready ? "Ready to Chat" : "Setting Up..."}
             </Text>
             <Text style={styles.emptySubtitle}>
-              {ready 
+              {ready
                 ? "Tap and hold the button below to start speaking. Release when done to get a response."
                 : "Please wait while the AI models are being loaded..."}
             </Text>
@@ -527,9 +642,9 @@ export default function VoiceAssistantScreen() {
               ) : (
                 <>
                   <Text style={styles.mainButtonIcon}>
-                    {pipelineState === "listening" ? "🎤" : 
-                     pipelineState === "speaking" ? "🔊" :
-                     pipelineState === "thinking" ? "🤔" : "🎙️"}
+                    {pipelineState === "listening" ? "🎤" :
+                      pipelineState === "speaking" ? "🔊" :
+                        pipelineState === "thinking" ? "🤔" : "🎙️"}
                   </Text>
                   <Text style={styles.mainButtonText}>{buttonConfig.label}</Text>
                 </>
@@ -539,47 +654,47 @@ export default function VoiceAssistantScreen() {
 
           {/* Wave animation for listening */}
           {pipelineState === "listening" && (
-          <>
-            <Animated.View
-              style={[
-                styles.waveRing,
-                {
-                  opacity: waveAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0.6, 0],
-                  }),
-                  transform: [
-                    {
-                      scale: waveAnim.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [1, 2],
-                      }),
-                    },
-                  ],
-                },
-              ]}
-            />
-            <Animated.View
-              style={[
-                styles.waveRing,
-                {
-                  opacity: waveAnim.interpolate({
-                    inputRange: [0, 0.5, 1],
-                    outputRange: [0, 0.6, 0],
-                  }),
-                  transform: [
-                    {
-                      scale: waveAnim.interpolate({
-                        inputRange: [0, 0.5, 1],
-                        outputRange: [1, 1.5, 2],
-                      }),
-                    },
-                  ],
-                },
-              ]}
-            />
-          </>
-        )}
+            <>
+              <Animated.View
+                style={[
+                  styles.waveRing,
+                  {
+                    opacity: waveAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.6, 0],
+                    }),
+                    transform: [
+                      {
+                        scale: waveAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [1, 2],
+                        }),
+                      },
+                    ],
+                  },
+                ]}
+              />
+              <Animated.View
+                style={[
+                  styles.waveRing,
+                  {
+                    opacity: waveAnim.interpolate({
+                      inputRange: [0, 0.5, 1],
+                      outputRange: [0, 0.6, 0],
+                    }),
+                    transform: [
+                      {
+                        scale: waveAnim.interpolate({
+                          inputRange: [0, 0.5, 1],
+                          outputRange: [1, 1.5, 2],
+                        }),
+                      },
+                    ],
+                  },
+                ]}
+              />
+            </>
+          )}
         </View>
       )}
 
@@ -974,13 +1089,17 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
   },
   voiceModelOptions: {
-    flexDirection: "row",
+    flexDirection: "column",
     gap: 10,
     paddingHorizontal: 12,
     paddingBottom: 12,
   },
+  voiceModelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   voiceModelChip: {
-    flex: 1,
     paddingVertical: 12,
     paddingHorizontal: 12,
     borderRadius: 10,
@@ -988,6 +1107,22 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     backgroundColor: COLORS.bg,
     alignItems: "center",
+  },
+  voiceModelChipFlex: {
+    flex: 1,
+  },
+  deleteModelButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: "#FEE2E2",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#FECACA",
+  },
+  deleteModelButtonText: {
+    fontSize: 18,
   },
   voiceModelChipActive: {
     borderColor: COLORS.success,
@@ -1004,6 +1139,40 @@ const styles = StyleSheet.create({
   },
   voiceModelChipDesc: {
     fontSize: 10,
+    color: COLORS.textMuted,
+  },
+  // LLM Model Selector styles
+  llmModelOptions: {
+    flexDirection: "column",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+  },
+  llmModelChip: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bg,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  llmModelChipActive: {
+    borderColor: COLORS.primary,
+    backgroundColor: "#EEF2FF",
+  },
+  llmModelChipText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: COLORS.text,
+  },
+  llmModelChipTextActive: {
+    color: COLORS.primary,
+  },
+  llmModelChipDesc: {
+    fontSize: 11,
     color: COLORS.textMuted,
   },
 });
