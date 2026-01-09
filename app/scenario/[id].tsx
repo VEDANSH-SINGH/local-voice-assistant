@@ -89,8 +89,8 @@ export default function ScenarioScreen() {
     llama, // Access the same LLM instance for feedback generation
   } = useVoiceAssistant({
     systemPrompt: params.systemPrompt || "You are a helpful assistant.",
-    ttsModelSource: "default" as ModelSource,
-    llamaModel: "gemma-2b-it",
+    ttsModelSource: "bert" as ModelSource, // BERT for best prosody in training scenarios
+    llamaModel: "gemma-3-270m", // Fast, lightweight model
     whisperModel: "base", // Use base model for better transcription accuracy in training
   });
 

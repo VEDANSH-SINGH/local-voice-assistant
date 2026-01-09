@@ -50,13 +50,17 @@ export interface VoiceAssistantConfig {
   systemPrompt?: string
   minSentenceLength?: number
   maxConcurrentSynthesis?: number
+  /** TTS length scale (speed): 1.0 = normal, <1.0 = faster, >1.0 = slower */
   ttsSpeed?: number
+  /** TTS noise scale (naturalness): 0.6 = natural, higher = more expressive */
   ttsNaturalness?: number
+  /** TTS noise scale W (duration variation): 0.8 = default */
+  ttsNoiseScaleW?: number
   /** Playback rate for audio (0.5 to 2.0, default 1.0). Applied at native level with zero conversion overhead. */
   playbackRate?: number
-  /** TTS model source: 'default' (MeloTTS) or 'custom' (Custom trained model) */
+  /** TTS model source: 'default' (MeloTTS), 'custom', or 'bert' */
   ttsModelSource?: ModelSource
-  /** LLM model ID to use (default: 'gemma-2b-it') */
+  /** LLM model ID to use (default: 'gemma-3-270m') */
   llamaModel?: string
   /** Whisper model ID to use (default: 'tiny' for speed, 'base' for accuracy) */
   whisperModel?: string
@@ -67,11 +71,12 @@ const DEFAULT_CONFIG: VoiceAssistantConfig = {
     "You are a helpful, friendly AI assistant. Keep your responses concise and conversational, suitable for voice interaction. Respond in 2-3 sentences when possible.",
   minSentenceLength: 6, // Reduced for phrase-level chunking
   maxConcurrentSynthesis: 1, // One at a time to reduce CPU competition
-  ttsSpeed: 1.2, // Slow mode for clearer speech
-  ttsNaturalness: 0.8, // Expressive mode
+  ttsSpeed: 1.0, // lengthScale: 1.0 = normal speed (matches useMeloTTS default)
+  ttsNaturalness: 0.6, // noiseScale: 0.6 = natural (matches useMeloTTS default)
+  ttsNoiseScaleW: 0.8, // noiseScaleW: 0.8 = default duration variation
   playbackRate: 1.0, // Normal playback speed
-  ttsModelSource: "default", // MeloTTS Default
-  llamaModel: "gemma-2b-it", // Default LLM model
+  ttsModelSource: "bert", // MeloTTS + BERT (best prosody)
+  llamaModel: "gemma-3-270m", // Default LLM model (fast, lightweight)
   whisperModel: "tiny", // Default Whisper model (fast)
 }
 
@@ -203,8 +208,8 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
           const models = await tts.refreshModelFiles(ttsSource)
           tLog("Available TTS models:", Object.keys(models))
 
-          // Use FP32 (RTF ~0.9) - pass source explicitly to avoid state timing issues
-          const availableTtsModel = options?.ttsModel || "melo-fp32"
+          // Use BERT model for bert source, FP32 for others
+          const availableTtsModel = options?.ttsModel || (ttsSource === "bert" ? "melo-bert" : "melo-fp32")
           tLog(
             `Loading TTS model: ${availableTtsModel} from source: ${ttsSource}`
           )
@@ -219,7 +224,8 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
               `Switching TTS source from ${tts.currentModelSource} to ${ttsSource}...`
             )
             await tts.switchModelSource(ttsSource)
-            const availableTtsModel = options?.ttsModel || "melo-fp32"
+            // Use BERT model for bert source, FP32 for others
+            const availableTtsModel = options?.ttsModel || (ttsSource === "bert" ? "melo-bert" : "melo-fp32")
             // Pass source explicitly to avoid state timing issues
             await tts.initializeModel(availableTtsModel, ttsSource)
             tLog(
@@ -259,9 +265,11 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         // Switch model source (downloads if needed)
         await tts.switchModelSource(newSource)
 
-        // Re-initialize with FP32 model from the new source
+        // Re-initialize with appropriate model from the new source
+        // BERT source uses melo-bert, others use melo-fp32
+        const modelToUse = newSource === "bert" ? "melo-bert" : "melo-fp32"
         // Pass the source explicitly to avoid state timing issues
-        await tts.initializeModel("melo-fp32", newSource)
+        await tts.initializeModel(modelToUse, newSource)
 
         tLog(
           `TTS switched to ${newSource} with model: ${
@@ -506,27 +514,28 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         const directory = await tts.getModelDirectory()
         const outputPath = new File(directory, `voice_${item.id}.wav`).uri
 
-        // Synthesize
+        // Synthesize - now returns actual audio duration
         const startTime = Date.now()
-        await tts.synthesizeToFile(item.text, outputPath, {
+        const { audioDuration } = await tts.synthesizeToFile(item.text, outputPath, {
           lengthScale: mergedConfig.ttsSpeed,
           noiseScale: mergedConfig.ttsNaturalness,
+          noiseScaleW: mergedConfig.ttsNoiseScaleW,
         })
-        const duration = (Date.now() - startTime) / 1000
+        const synthesisTime = (Date.now() - startTime) / 1000
 
         tLog(
-          `✅ Synthesized in ${duration.toFixed(2)}s: "${item.text.substring(
+          `✅ Synthesized in ${synthesisTime.toFixed(2)}s, audio duration: ${audioDuration.toFixed(2)}s: "${item.text.substring(
             0,
             30
           )}..."`
         )
 
-        // Update queue with audio path
+        // Update queue with audio path and ACTUAL audio duration (not synthesis time)
         const updatedItem: TTSQueueItem = {
           ...item,
           status: "ready",
           audioPath: outputPath,
-          audioDuration: duration,
+          audioDuration: audioDuration, // Use actual audio duration from TTS
         }
 
         setTtsQueue((prev) =>
@@ -585,56 +594,64 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         const playStartTime = Date.now()
         player.play()
 
-        // Wait briefly for player to load and get actual duration
-        await new Promise((r) => setTimeout(r, 50))
+        // Use the ACTUAL audio duration from TTS synthesis (most accurate)
+        // This is calculated from samples/sampleRate during synthesis
+        let actualDuration = item.audioDuration
 
-        // Get ACTUAL audio duration from the player
-        let actualDuration = player.duration
-
-        // If duration is not available yet, poll for it (max 500ms)
+        // Fallback 1: Try to get duration from player if not available from synthesis
         if (!actualDuration || actualDuration <= 0) {
-          for (let i = 0; i < 10; i++) {
-            await new Promise((r) => setTimeout(r, 50))
-            actualDuration = player.duration
-            if (actualDuration && actualDuration > 0) break
+          await new Promise((r) => setTimeout(r, 50))
+          actualDuration = player.duration
+
+          // Poll for duration if not immediately available (max 500ms)
+          if (!actualDuration || actualDuration <= 0) {
+            for (let i = 0; i < 10; i++) {
+              await new Promise((r) => setTimeout(r, 50))
+              actualDuration = player.duration
+              if (actualDuration && actualDuration > 0) break
+            }
           }
         }
 
-        // Fallback: estimate from word count if duration still unavailable
+        // Fallback 2: Estimate from word count if all else fails
         if (!actualDuration || actualDuration <= 0) {
           const wordCount = item.text.trim().split(/\s+/).length
           actualDuration = Math.max(0.5, wordCount / 2.5) * 1.2 // Account for slow TTS
           tLog(
-            `⚠️ Duration unavailable, using fallback: ${actualDuration.toFixed(
+            `⚠️ Duration unavailable, using fallback estimate: ${actualDuration.toFixed(
               2
             )}s`
+          )
+        } else {
+          tLog(
+            `📊 Using TTS-reported duration: ${actualDuration.toFixed(2)}s`
           )
         }
 
         const adjustedDuration = actualDuration / playbackRate
 
         // Calculate remaining wait time (subtract time already elapsed since play started)
+        // Add 300ms safety buffer to ensure audio fully completes before cleanup
+        // (accounts for setTimeout inaccuracy, audio system latency, and buffer flushing)
+        const PLAYBACK_SAFETY_BUFFER_MS = 300
         const elapsedSincePlay = Date.now() - playStartTime
-        const waitTime = Math.max(0, adjustedDuration * 1000 - elapsedSincePlay)
+        const waitTime = Math.max(0, adjustedDuration * 1000 - elapsedSincePlay + PLAYBACK_SAFETY_BUFFER_MS)
 
         tLog(
           `⏱️ Duration: ${actualDuration.toFixed(
             2
-          )}s, elapsed: ${elapsedSincePlay}ms, waiting: ${waitTime.toFixed(
+          )}s (adjusted: ${adjustedDuration.toFixed(2)}s at ${playbackRate}x), waiting: ${waitTime.toFixed(
             0
-          )}ms`
+          )}ms (includes ${PLAYBACK_SAFETY_BUFFER_MS}ms buffer)`
         )
 
         await new Promise<void>((resolve) => {
           setTimeout(resolve, waitTime)
         })
 
-        // Cleanup player
-        try {
-          player.pause()
-        } catch (e) {
-          // Ignore - player might already be stopped
-        }
+        // Cleanup player - don't call pause(), just remove()
+        // Calling pause() can interrupt audio that's still flushing through the audio system
+        // This matches the TTS tab behavior which never calls pause()
         player.remove()
         audioPlayersRef.current.delete(item.id)
 
@@ -1161,10 +1178,11 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
           `voice_greeting_${Date.now()}.wav`
         ).uri
 
-        // Synthesize
-        await tts.synthesizeToFile(cleanedText, outputPath, {
+        // Synthesize - now returns actual audio duration
+        const { audioDuration } = await tts.synthesizeToFile(cleanedText, outputPath, {
           lengthScale: mergedConfig.ttsSpeed,
           noiseScale: mergedConfig.ttsNaturalness,
+          noiseScaleW: mergedConfig.ttsNoiseScaleW,
         })
 
         // Play the audio
@@ -1179,33 +1197,39 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
 
         player.play()
 
-        // Wait for player to load and get duration
-        await new Promise((r) => setTimeout(r, 50))
-        let duration = player.duration
+        // Use the ACTUAL audio duration from TTS synthesis (most accurate)
+        let duration = audioDuration
+
+        // Fallback: try player duration if TTS duration unavailable
         if (!duration || duration <= 0) {
-          for (let i = 0; i < 10; i++) {
-            await new Promise((r) => setTimeout(r, 50))
-            duration = player.duration
-            if (duration && duration > 0) break
+          await new Promise((r) => setTimeout(r, 50))
+          duration = player.duration
+          if (!duration || duration <= 0) {
+            for (let i = 0; i < 10; i++) {
+              await new Promise((r) => setTimeout(r, 50))
+              duration = player.duration
+              if (duration && duration > 0) break
+            }
           }
         }
 
-        // Fallback duration estimate
+        // Fallback: estimate from word count
         if (!duration || duration <= 0) {
           const wordCount = cleanedText.trim().split(/\s+/).length
           duration = Math.max(0.5, wordCount / 2.5)
         }
 
-        // Wait for playback to complete
+        tLog(`📊 Greeting playback duration: ${duration.toFixed(2)}s`)
+
+        // Wait for playback to complete (with safety buffer for audio system latency)
+        const PLAYBACK_SAFETY_BUFFER_MS = 300
         const adjustedDuration = duration / playbackRate
         await new Promise((resolve) =>
-          setTimeout(resolve, adjustedDuration * 1000)
+          setTimeout(resolve, adjustedDuration * 1000 + PLAYBACK_SAFETY_BUFFER_MS)
         )
 
-        // Cleanup
-        try {
-          player.pause()
-        } catch (e) {}
+        // Cleanup - don't call pause(), just remove()
+        // Calling pause() can interrupt audio still flushing through the system
         player.remove()
 
         try {
@@ -1225,6 +1249,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       cleanTextForTTS,
       mergedConfig.ttsSpeed,
       mergedConfig.ttsNaturalness,
+      mergedConfig.ttsNoiseScaleW,
       mergedConfig.playbackRate,
     ]
   )

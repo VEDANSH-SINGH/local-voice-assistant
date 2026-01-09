@@ -59,9 +59,12 @@ export default function TTSScreen() {
     checkAndInitialize();
   }, []);
 
-  const checkAndInitialize = async () => {
+  const checkAndInitialize = async (sourceOverride?: ModelSource) => {
     try {
       setError("");
+      
+      // Use override if provided, otherwise use current source
+      const targetSource = sourceOverride ?? currentModelSource;
       
       // First check if ONNX runtime is available
       const onnxAvailable = await checkOnnxAvailability();
@@ -73,17 +76,26 @@ export default function TTSScreen() {
       const directory = await getModelDirectory();
       console.log("TTS model directory:", directory.uri);
       
-      // Refresh model files to get current state
-      const currentModels = await refreshModelFiles();
+      // Refresh model files to get current state (use target source)
+      const currentModels = await refreshModelFiles(targetSource);
       console.log("Available models:", Object.keys(currentModels));
+      console.log("Current model source:", targetSource);
       
+      // For BERT source, use the BERT model
+      if (targetSource === "bert" && currentModels["melo-bert"]) {
+        console.log("Using TTS model: melo-bert (BERT-enhanced)");
+        await initializeModel("melo-bert", "bert");
+      }
       // Use FP32 (RTF ~0.9)
-      if (currentModels["melo-fp32"]) {
+      else if (currentModels["melo-fp32"]) {
         console.log("Using TTS model: melo-fp32");
-        await initializeModel("melo-fp32");
+        await initializeModel("melo-fp32", targetSource);
       } else if (currentModels["melo-int8"]) {
         console.log("Using TTS model: melo-int8 (FP32 not available)");
-        await initializeModel("melo-int8");
+        await initializeModel("melo-int8", targetSource);
+      } else if (currentModels["melo-bert"]) {
+        console.log("Using TTS model: melo-bert");
+        await initializeModel("melo-bert", "bert");
       } else {
         // Models not found - show download option
         setError("No TTS model found. Tap 'Download Models' to get started.");
@@ -99,8 +111,8 @@ export default function TTSScreen() {
       setError("");
       const success = await switchModelSource(source);
       if (success) {
-        // Re-check and initialize after switch/download
-        await checkAndInitialize();
+        // Re-check and initialize after switch/download, passing the source explicitly
+        await checkAndInitialize(source);
       }
     } catch (err) {
       console.error("Failed to switch/download models:", err);
@@ -111,7 +123,9 @@ export default function TTSScreen() {
   const handleInitializeModel = async (modelId: string) => {
     try {
       setError("");
-      await initializeModel(modelId);
+      // For BERT model, ensure we use the bert source
+      const sourceOverride = modelId === "melo-bert" ? "bert" : undefined;
+      await initializeModel(modelId, sourceOverride);
     } catch (err) {
       console.error("Failed to initialize model:", err);
       setError(`Failed to initialize model: ${err}`);
@@ -212,7 +226,7 @@ export default function TTSScreen() {
                     {isDownloading && currentModelSource === 'default' ? (
                       <ActivityIndicator color="#ffffff" size="small" />
                     ) : (
-                      <Text style={styles.downloadButtonText}>Download MeloTTS</Text>
+                      <Text style={styles.downloadButtonText}>MeloTTS</Text>
                     )}
                   </TouchableOpacity>
                   
@@ -224,7 +238,19 @@ export default function TTSScreen() {
                     {isDownloading && currentModelSource === 'custom' ? (
                       <ActivityIndicator color="#ffffff" size="small" />
                     ) : (
-                      <Text style={styles.downloadButtonText}>Download Custom</Text>
+                      <Text style={styles.downloadButtonText}>Custom</Text>
+                    )}
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={[styles.downloadButton, { backgroundColor: '#7B2D8E' }, isDownloading && styles.buttonDisabled]}
+                    onPress={() => handleSwitchSource('bert')}
+                    disabled={isDownloading}
+                  >
+                    {isDownloading && currentModelSource === 'bert' ? (
+                      <ActivityIndicator color="#ffffff" size="small" />
+                    ) : (
+                      <Text style={styles.downloadButtonText}>+ BERT</Text>
                     )}
                   </TouchableOpacity>
                 </View>
@@ -427,6 +453,7 @@ export default function TTSScreen() {
               "Good morning!",
               "See you later.",
               "Have a great day!",
+              "Sure, that's the spirit! It takes time. So, are you familiar with any specific programming languages right now?",
             ].map((phrase) => (
               <TouchableOpacity
                 key={phrase}
@@ -443,9 +470,18 @@ export default function TTSScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Models</Text>
           <View style={styles.modelGrid}>
-            {TTS_MODELS.map((model) => {
+            {TTS_MODELS
+              // Filter models based on current source
+              .filter((model) => {
+                if (currentModelSource === "bert") {
+                  return model.id === "melo-bert";
+                }
+                return model.id !== "melo-bert";
+              })
+              .map((model) => {
               const isActive = getCurrentModel()?.id === model.id;
               const hasFile = modelFiles[model.id] !== undefined;
+              const isBertModel = model.id === "melo-bert";
               
               return (
                 <TouchableOpacity
@@ -453,21 +489,30 @@ export default function TTSScreen() {
                   style={[
                     styles.modelChip,
                     isActive && styles.modelChipActive,
+                    isBertModel && isActive && styles.modelChipBertActive,
                     !hasFile && styles.modelChipDisabled,
                     (isDownloading || isInitializingModel) && styles.buttonDisabled,
                   ]}
                   onPress={() => handleInitializeModel(model.id)}
                   disabled={!hasFile || isDownloading || isInitializingModel}
                 >
-                  <Text
-                    style={[
-                      styles.modelChipText,
-                      isActive && styles.modelChipTextActive,
-                      !hasFile && styles.modelChipTextDisabled,
-                    ]}
-                  >
-                    {model.label}
-                  </Text>
+                  <View style={isBertModel ? styles.bertModelHeader : undefined}>
+                    <Text
+                      style={[
+                        styles.modelChipText,
+                        isActive && styles.modelChipTextActive,
+                        isBertModel && isActive && styles.modelChipTextBertActive,
+                        !hasFile && styles.modelChipTextDisabled,
+                      ]}
+                    >
+                      {model.label}
+                    </Text>
+                    {isBertModel && hasFile && (
+                      <View style={styles.bertModelBadge}>
+                        <Text style={styles.bertModelBadgeText}>BERT</Text>
+                      </View>
+                    )}
+                  </View>
                   <Text
                     style={[
                       styles.modelQuality,
@@ -487,9 +532,9 @@ export default function TTSScreen() {
           <Text style={styles.sectionLabel}>Model Source</Text>
           <View style={styles.downloadSourceCard}>
             <Text style={styles.downloadSourceTitle}>
-              Active: {currentModelSource === 'custom' ? 'Custom Model' : 'MeloTTS Default'}
+              Active: {currentModelSource === 'bert' ? 'MeloTTS + BERT' : currentModelSource === 'custom' ? 'Custom Model' : 'MeloTTS Default'}
             </Text>
-            <View style={styles.modelSourceOptions}>
+            <View style={styles.modelSourceOptionsVertical}>
               <TouchableOpacity
                 style={[
                   styles.modelSourceChip,
@@ -527,6 +572,31 @@ export default function TTSScreen() {
                   {downloadedSources.custom ? '✓ Downloaded' : 'Not downloaded'}
                 </Text>
               </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[
+                  styles.modelSourceChip,
+                  styles.modelSourceChipBert,
+                  currentModelSource === 'bert' && styles.modelSourceChipBertActive,
+                ]}
+                onPress={() => handleSwitchSource('bert')}
+                disabled={isDownloading}
+              >
+                <View style={styles.bertChipHeader}>
+                  <Text style={[
+                    styles.modelSourceChipText,
+                    currentModelSource === 'bert' && styles.modelSourceChipTextBertActive,
+                  ]}>
+                    MeloTTS + BERT
+                  </Text>
+                  <View style={styles.bertBadge}>
+                    <Text style={styles.bertBadgeText}>Best Prosody</Text>
+                  </View>
+                </View>
+                <Text style={styles.modelSourceDesc}>
+                  {downloadedSources.bert ? '✓ Downloaded (~580MB)' : 'Not downloaded (~580MB)'}
+                </Text>
+              </TouchableOpacity>
             </View>
             
             {isDownloading && (
@@ -538,6 +608,7 @@ export default function TTSScreen() {
             
             <Text style={styles.downloadSourceNote}>
               Tap to switch. Downloads once, then switches instantly.
+              {'\n'}BERT model provides best prosody but requires more storage.
             </Text>
           </View>
         </View>
@@ -734,6 +805,10 @@ const styles = StyleSheet.create({
   modelSourceOptions: {
     flexDirection: "row",
     gap: 10,
+    flexWrap: "wrap",
+  },
+  modelSourceOptionsVertical: {
+    gap: 10,
   },
   modelSourceChip: {
     flex: 1,
@@ -747,6 +822,36 @@ const styles = StyleSheet.create({
   modelSourceChipActive: {
     borderColor: "#007AFF",
     backgroundColor: "#F0F7FF",
+  },
+  modelSourceChipBert: {
+    borderColor: "#7B2D8E",
+    backgroundColor: "#FAF5FC",
+  },
+  modelSourceChipBertActive: {
+    borderColor: "#7B2D8E",
+    backgroundColor: "#F0E6F4",
+  },
+  modelSourceChipTextBertActive: {
+    color: "#7B2D8E",
+  },
+  bertChipHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 2,
+  },
+  bertBadge: {
+    backgroundColor: "#7B2D8E",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  bertBadgeText: {
+    color: "#ffffff",
+    fontSize: 9,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
   },
   modelSourceChipText: {
     fontSize: 14,
@@ -975,6 +1080,30 @@ const styles = StyleSheet.create({
   modelChipActive: {
     borderColor: ACCENT_COLOR,
     backgroundColor: "#FFF5F0",
+  },
+  modelChipBertActive: {
+    borderColor: "#7B2D8E",
+    backgroundColor: "#F0E6F4",
+  },
+  modelChipTextBertActive: {
+    color: "#7B2D8E",
+  },
+  bertModelHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  bertModelBadge: {
+    backgroundColor: "#7B2D8E",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  bertModelBadgeText: {
+    color: "#ffffff",
+    fontSize: 9,
+    fontWeight: "700",
+    textTransform: "uppercase",
   },
   modelChipDisabled: {
     backgroundColor: "#f5f5f5",

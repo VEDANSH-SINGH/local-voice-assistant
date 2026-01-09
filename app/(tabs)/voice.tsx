@@ -49,8 +49,8 @@ export default function VoiceAssistantScreen() {
   const [isInitializing, setIsInitializing] = useState(false);
   const [inputMode, setInputMode] = useState<"voice" | "text">("voice");
   const [textInput, setTextInput] = useState("");
-  const [ttsModelSource, setTtsModelSource] = useState<ModelSource>('default');
-  const [selectedLLMModel, setSelectedLLMModel] = useState<string>('gemma-2b-it');
+  const [ttsModelSource, setTtsModelSource] = useState<ModelSource>('bert');
+  const [selectedLLMModel, setSelectedLLMModel] = useState<string>('gemma-3-270m');
   const [showSettings, setShowSettings] = useState(false);
   const [showLLMPicker, setShowLLMPicker] = useState(false);
 
@@ -299,13 +299,77 @@ export default function VoiceAssistantScreen() {
           onPress={() => setShowSettings(!showSettings)}
         >
           <Text style={styles.voiceModelTitle}>
-            🔊 Voice: {tts.currentModelSource === 'custom' ? 'Custom' : 'MeloTTS'} FP32
+            🔊 Voice: {tts.currentModelSource === 'bert' ? 'MeloTTS + BERT' : tts.currentModelSource === 'custom' ? 'Custom' : 'MeloTTS'} 
           </Text>
           <Text style={styles.voiceModelToggle}>{showSettings ? '▲' : '▼'}</Text>
         </TouchableOpacity>
 
         {showSettings && (
           <View style={styles.voiceModelOptions}>
+            {/* BERT Model - Best Prosody (Default) */}
+            <View style={styles.voiceModelRow}>
+              <TouchableOpacity
+                style={[
+                  styles.voiceModelChip,
+                  styles.voiceModelChipFlex,
+                  tts.currentModelSource === 'bert' && styles.voiceModelChipBert,
+                ]}
+                onPress={async () => {
+                  if (tts.currentModelSource !== 'bert') {
+                    setTtsModelSource('bert');
+                    await switchTTSSource('bert');
+                  }
+                }}
+                disabled={isLoading || pipelineState !== 'idle'}
+              >
+                {isTTSLoading && ttsModelSource === 'bert' ? (
+                  <ActivityIndicator size="small" color="#7B2D8E" />
+                ) : (
+                  <>
+                    <View style={styles.bertLabelRow}>
+                      <Text style={[
+                        styles.voiceModelChipText,
+                        tts.currentModelSource === 'bert' && styles.voiceModelChipTextBert,
+                      ]}>
+                        MeloTTS + BERT
+                      </Text>
+                      <View style={styles.bestBadge}>
+                        <Text style={styles.bestBadgeText}>BEST</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.voiceModelChipDesc}>
+                      {tts.downloadedSources.bert ? '✓ Ready (~580MB)' : 'Will download (~580MB)'}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+              {tts.downloadedSources.bert && (
+                <TouchableOpacity
+                  style={styles.deleteModelButton}
+                  onPress={() => {
+                    Alert.alert(
+                      "Delete BERT TTS Model",
+                      "This will delete the BERT-enhanced TTS model files (~580MB). You can re-download later.",
+                      [
+                        { text: "Cancel", style: "cancel" },
+                        {
+                          text: "Delete",
+                          style: "destructive",
+                          onPress: async () => {
+                            await tts.deleteModelSource('bert');
+                          },
+                        },
+                      ]
+                    );
+                  }}
+                  disabled={isLoading || pipelineState !== 'idle'}
+                >
+                  <Text style={styles.deleteModelButtonText}>🗑️</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Default MeloTTS */}
             <View style={styles.voiceModelRow}>
               <TouchableOpacity
                 style={[
@@ -363,6 +427,7 @@ export default function VoiceAssistantScreen() {
               )}
             </View>
 
+            {/* Custom Model */}
             <View style={styles.voiceModelRow}>
               <TouchableOpacity
                 style={[
@@ -1128,6 +1193,10 @@ const styles = StyleSheet.create({
     borderColor: COLORS.success,
     backgroundColor: "#F0FDFA",
   },
+  voiceModelChipBert: {
+    borderColor: "#7B2D8E",
+    backgroundColor: "#F5E6FA",
+  },
   voiceModelChipText: {
     fontSize: 13,
     fontWeight: "600",
@@ -1137,9 +1206,30 @@ const styles = StyleSheet.create({
   voiceModelChipTextActive: {
     color: COLORS.success,
   },
+  voiceModelChipTextBert: {
+    color: "#7B2D8E",
+  },
   voiceModelChipDesc: {
     fontSize: 10,
     color: COLORS.textMuted,
+  },
+  bertLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 2,
+  },
+  bestBadge: {
+    backgroundColor: "#7B2D8E",
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  bestBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 8,
+    fontWeight: "800",
+    letterSpacing: 0.3,
   },
   // LLM Model Selector styles
   llmModelOptions: {
