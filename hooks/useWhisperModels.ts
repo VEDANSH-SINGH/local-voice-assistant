@@ -286,12 +286,30 @@ export function useWhisperModels() {
     [downloadModel, vadContext]
   );
 
-  const resetWhisperContext = useCallback(() => {
+  const resetWhisperContext = useCallback(async () => {
+    // Release the whisper context to free GPU/memory resources
+    if (whisperContext?.release) {
+      try {
+        await whisperContext.release();
+        console.log("Whisper context released");
+      } catch (e) {
+        console.warn("Failed to release whisper context:", e);
+      }
+    }
+    // Release VAD context if it has a release method
+    if (vadContext?.release) {
+      try {
+        await vadContext.release();
+        console.log("VAD context released");
+      } catch (e) {
+        console.warn("Failed to release VAD context:", e);
+      }
+    }
     setWhisperContext(null);
     setVadContext(null);
     setCurrentModelId(null);
     console.log("Whisper contexts reset");
-  }, []);
+  }, [whisperContext, vadContext]);
 
   const getModelById = useCallback((modelId: string) => {
     return WHISPER_MODELS.find((m) => m.id === modelId);

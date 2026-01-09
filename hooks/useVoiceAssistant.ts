@@ -365,18 +365,29 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         const wordCount = countWords(currentPhrase)
 
         // First chunk: force break at MAX_FIRST_CHUNK_WORDS even without punctuation
+        // But ONLY break at word boundaries (after a space)
         if (
           isFirstChunk &&
           phrases.length === 0 &&
-          wordCount >= MAX_FIRST_CHUNK_WORDS
+          wordCount >= MAX_FIRST_CHUNK_WORDS &&
+          (text[i] === " " || i === text.length - 1)  // Only break at word boundary
         ) {
-          // Find the last word boundary to break cleanly
-          const trimmed = currentPhrase.trim()
-          phrases.push(trimmed)
+          // Ensure we break at word boundary - find last space if current char isn't a space
+          let phraseToAdd = currentPhrase.trim()
+          if (text[i] !== " " && i !== text.length - 1) {
+            const lastSpaceIdx = phraseToAdd.lastIndexOf(" ")
+            if (lastSpaceIdx > 0) {
+              // Keep the partial word for next chunk
+              const overflow = phraseToAdd.slice(lastSpaceIdx + 1)
+              phraseToAdd = phraseToAdd.slice(0, lastSpaceIdx)
+              // Note: overflow will be lost here, but since we only break at space this shouldn't happen
+            }
+          }
+          phrases.push(phraseToAdd)
           currentPhrase = ""
           isFirstChunkRef.current = false // Mark first chunk as extracted
           tLog(
-            `⚡ First chunk forced at ${wordCount} words for faster playback`
+            `⚡ First chunk forced at ${countWords(phraseToAdd)} words for faster playback`
           )
         }
         // Check if we should break here (normal rules)
@@ -917,7 +928,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         await whisper.whisperContext.transcribeRealtime({
           language: "en",
           realtimeAudioSec: 60,
-          realtimeAudioSliceSec: 5,
+          realtimeAudioSliceSec: 10,  // Increased from 5 to 10 for better transcription quality (more context per chunk)
           realtimeAudioMinSec: 1,
           audioSessionOnStartIos: {
             category: "PlayAndRecord" as any,
@@ -1254,10 +1265,35 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     ]
   )
 
-  // Cleanup on unmount
+  // Track contexts in refs for cleanup (to avoid stale closures)
+  const whisperContextRef = useRef(whisper.whisperContext)
+  const llamaContextRef = useRef(llama.llamaContext)
+  
+  // Keep refs updated
+  useEffect(() => {
+    whisperContextRef.current = whisper.whisperContext
+  }, [whisper.whisperContext])
+  
+  useEffect(() => {
+    llamaContextRef.current = llama.llamaContext
+  }, [llama.llamaContext])
+
+  // Cleanup on unmount - release all contexts to free GPU/memory resources
   useEffect(() => {
     return () => {
       cancel()
+      // Release whisper context to prevent resource contention with other screens
+      if (whisperContextRef.current?.release) {
+        whisperContextRef.current.release().catch((e: any) => 
+          console.warn("Failed to release whisper context on unmount:", e)
+        )
+      }
+      // Release llama context
+      if (llamaContextRef.current?.release) {
+        llamaContextRef.current.release().catch((e: any) =>
+          console.warn("Failed to release llama context on unmount:", e)
+        )
+      }
     }
   }, [])
 

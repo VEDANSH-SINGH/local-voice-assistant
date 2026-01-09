@@ -121,12 +121,15 @@ class TextChunker {
         } else {
           // No good split point, force split at word boundary
           const lastSpace = current.lastIndexOf(" ")
-          if (lastSpace > this.desiredLength / 2) {
+          if (lastSpace > 0) {
+            // Always prefer splitting at a space to avoid cutting words
             const overflow = current.slice(lastSpace + 1)
             current = current.slice(0, lastSpace)
             chunks.push(current.trim())
             current = overflow
           } else {
+            // No space found at all (very rare - single long word)
+            // Push as-is to avoid infinite loop
             chunks.push(current.trim())
             current = ""
           }
