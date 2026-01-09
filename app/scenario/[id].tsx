@@ -62,7 +62,7 @@ export default function ScenarioScreen() {
 
   const [isInitializing, setIsInitializing] = useState(true);
   const [hasPlayedInitial, setHasPlayedInitial] = useState(false);
-  
+
   // Feedback states
   const [isConversationComplete, setIsConversationComplete] = useState(false);
   const [isGeneratingFeedback, setIsGeneratingFeedback] = useState(false);
@@ -90,7 +90,7 @@ export default function ScenarioScreen() {
   } = useVoiceAssistant({
     systemPrompt: params.systemPrompt || "You are a helpful assistant.",
     ttsModelSource: "bert" as ModelSource, // BERT for best prosody in training scenarios
-    llamaModel: "gemma-3-270m", // Fast, lightweight model
+    llamaModel: "gemma-2b-it", // Gemma 2B IT - better quality for scenarios
     whisperModel: "tiny", // Use tiny model for faster transcription
   });
 
@@ -134,17 +134,17 @@ export default function ScenarioScreen() {
   useEffect(() => {
     const checkCompletion = () => {
       // Check if any message contains <conv_completed/>
-      const hasCompletionTag = 
+      const hasCompletionTag =
         llmResponse?.includes("<conv_completed/>") ||
         conversationHistory.some(msg => msg.content.includes("<conv_completed/>"));
-      
+
       if (hasCompletionTag && !conversationCompletedRef.current) {
         conversationCompletedRef.current = true;
         setIsConversationComplete(true);
         console.log("🏁 Conversation completed detected!");
       }
     };
-    
+
     checkCompletion();
   }, [llmResponse, conversationHistory]);
 
@@ -153,7 +153,7 @@ export default function ScenarioScreen() {
     if (pipelineState === "speaking") {
       wasPlayingRef.current = true;
     }
-    
+
     // When pipeline goes idle after speaking AND conversation is complete
     if (wasPlayingRef.current && pipelineState === "idle" && isConversationComplete && !isGeneratingFeedback && !feedback) {
       wasPlayingRef.current = false;
@@ -321,7 +321,7 @@ Analyze the employee's communication skills and provide feedback in the followin
   const handleMicPress = async () => {
     // Don't allow mic press if conversation is complete
     if (isConversationComplete) return;
-    
+
     if (pipelineState === "idle") {
       const hasPermission = await ensureMicrophonePermission();
       if (hasPermission) {
@@ -414,7 +414,7 @@ Analyze the employee's communication skills and provide feedback in the followin
             ) : feedback ? (
               <>
                 <Text style={styles.feedbackTitle}>📊 Your Feedback</Text>
-                
+
                 {/* Score Circle */}
                 <View style={[styles.scoreCircle, { borderColor: getScoreColor(feedback.overall_score) }]}>
                   <Text style={[styles.scoreText, { color: getScoreColor(feedback.overall_score) }]}>
@@ -463,9 +463,9 @@ Analyze the employee's communication skills and provide feedback in the followin
           <ActivityIndicator size="large" color={COLORS.accent} />
           <Text style={styles.loadingText}>
             {isWhisperLoading ? "Loading speech recognition..." :
-             isLlamaLoading ? "Loading AI model..." :
-             isTTSLoading ? "Loading voice synthesis..." :
-             "Preparing..."}
+              isLlamaLoading ? "Loading AI model..." :
+                isTTSLoading ? "Loading voice synthesis..." :
+                  "Preparing..."}
           </Text>
         </View>
       )}
@@ -525,8 +525,8 @@ Analyze the employee's communication skills and provide feedback in the followin
       <View style={styles.bottomSection}>
         {/* Status Text */}
         <Text style={[styles.statusText, { color: stateInfo.color }]}>
-          {isLoading ? "Loading models..." : 
-           isConversationComplete ? "Conversation complete" : stateInfo.label}
+          {isLoading ? "Loading models..." :
+            isConversationComplete ? "Conversation complete" : stateInfo.label}
         </Text>
 
         {/* Mic Button */}
@@ -543,9 +543,9 @@ Analyze the employee's communication skills and provide feedback in the followin
               ) : (
                 <Text style={styles.micIcon}>
                   {isConversationComplete ? "✓" :
-                   pipelineState === "listening" ? "🎤" :
-                   pipelineState === "speaking" ? "🔊" :
-                   pipelineState === "thinking" ? "💭" : "🎙️"}
+                    pipelineState === "listening" ? "🎤" :
+                      pipelineState === "speaking" ? "🔊" :
+                        pipelineState === "thinking" ? "💭" : "🎙️"}
                 </Text>
               )}
             </Animated.View>
