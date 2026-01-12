@@ -49,15 +49,17 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => <IconSymbol size={26} name="waveform.circle.fill" color={color} />,
         }}
       />
+      {/* Tab 3: Chat (for LLM testing) */}
+      <Tabs.Screen
+        name="chat"
+        options={{
+          title: 'Chat',
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="bubble.left.and.bubble.right.fill" color={color} />,
+        }}
+      />
       {/* Hidden tabs */}
       <Tabs.Screen
         name="index"
-        options={{
-          href: null, // Hide from tab bar
-        }}
-      />
-      <Tabs.Screen
-        name="chat"
         options={{
           href: null, // Hide from tab bar
         }}
