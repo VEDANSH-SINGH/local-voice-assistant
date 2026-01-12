@@ -25,7 +25,7 @@ export const LLAMA_MODELS = [
     label: "Gemma 2B IT Q8 (Finetuned)",
     description: "Fine-tuned instruction model with 8-bit quantization",
     size: "2B",
-    url: "https://huggingface.co/vedanshsingh17/gemma-finetune-2b-it-gguf-v3/resolve/main/gemma-2b-it.Q8_0.gguf",
+    url: "https://huggingface.co/vedanshsingh17/gemma-finetune-2b-it-gguf-v4/resolve/main/gemma-2b-it.Q8_0.gguf",
     expectedSizeBytes: 2600000000, // ~2.6GB Q8_0 quantization
   },
   {
