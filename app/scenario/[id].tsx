@@ -58,10 +58,17 @@ export default function ScenarioScreen() {
     title: string;
     systemPrompt: string;
     initialMessage: string;
+    situation: string;
+    userInitiates: string;
   }>();
 
-  const [isInitializing, setIsInitializing] = useState(true);
+  // Prep screen state - show context before starting conversation
+  const [showPrepScreen, setShowPrepScreen] = useState(true);
+  const [isInitializing, setIsInitializing] = useState(false);
   const [hasPlayedInitial, setHasPlayedInitial] = useState(false);
+  
+  // Derived values
+  const userInitiates = params.userInitiates === "true";
 
   // Feedback states
   const [isConversationComplete, setIsConversationComplete] = useState(false);
@@ -98,25 +105,24 @@ export default function ScenarioScreen() {
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const waveAnim = useRef(new Animated.Value(0)).current;
 
-  // Initialize on mount
-  useEffect(() => {
-    const init = async () => {
-      setIsInitializing(true);
-      try {
-        await initializeAll();
-      } catch (err) {
-        console.error("Initialization failed:", err);
-      } finally {
-        setIsInitializing(false);
-      }
-    };
-    init();
-  }, []);
+  // Handle "I am ready" button press
+  const handleStartConversation = async () => {
+    setShowPrepScreen(false);
+    setIsInitializing(true);
+    try {
+      await initializeAll();
+    } catch (err) {
+      console.error("Initialization failed:", err);
+    } finally {
+      setIsInitializing(false);
+    }
+  };
 
-  // Play initial message when models are ready
+  // Play initial message when models are ready (only if AI initiates)
   useEffect(() => {
     const playInitialMessage = async () => {
-      if (isReady() && !hasPlayedInitial && !isInitializing && params.initialMessage) {
+      // Only play initial message if: models ready, not played yet, not user-initiated, has message
+      if (isReady() && !hasPlayedInitial && !isInitializing && !showPrepScreen && !userInitiates && params.initialMessage) {
         setHasPlayedInitial(true);
         // Small delay to ensure everything is ready
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -128,7 +134,7 @@ export default function ScenarioScreen() {
       }
     };
     playInitialMessage();
-  }, [isReady, hasPlayedInitial, isInitializing, params.initialMessage]);
+  }, [isReady, hasPlayedInitial, isInitializing, showPrepScreen, userInitiates, params.initialMessage]);
 
   // Detect conversation completion from llmResponse or conversationHistory
   useEffect(() => {
@@ -392,6 +398,83 @@ Analyze the employee's communication skills and provide feedback in the followin
     return COLORS.accent;
   };
 
+  // Prep Screen - Show context before starting conversation
+  if (showPrepScreen) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="dark" />
+        
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity onPress={handleBack} style={styles.backButton}>
+            <Text style={styles.backText}>← Back</Text>
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>{params.title || "Scenario"}</Text>
+          <View style={styles.headerSpacer} />
+        </View>
+
+        {/* Context Content */}
+        <ScrollView 
+          style={styles.prepContent}
+          contentContainerStyle={styles.prepContentContainer}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Scenario Icon & Title */}
+          <View style={styles.prepHeader}>
+            <View style={styles.prepIconContainer}>
+              <Text style={styles.prepIcon}>🎭</Text>
+            </View>
+            <Text style={styles.prepTitle}>Your Situation</Text>
+            <Text style={styles.prepSubtitle}>Read the context below before starting</Text>
+          </View>
+
+          {/* Situation Card */}
+          <View style={styles.situationCard}>
+            <Text style={styles.situationText}>{params.situation}</Text>
+          </View>
+
+          {/* Who speaks first indicator */}
+          <View style={styles.initiatorCard}>
+            <View style={styles.initiatorIcon}>
+              <Text style={styles.initiatorIconText}>{userInitiates ? "🎤" : "🔊"}</Text>
+            </View>
+            <View style={styles.initiatorTextContainer}>
+              <Text style={styles.initiatorLabel}>
+                {userInitiates ? "You speak first" : "They speak first"}
+              </Text>
+              <Text style={styles.initiatorHint}>
+                {userInitiates 
+                  ? "Start the conversation when you're ready" 
+                  : "Listen to what they say, then respond"}
+              </Text>
+            </View>
+          </View>
+
+          {/* Tips */}
+          <View style={styles.tipsCard}>
+            <Text style={styles.tipsTitle}>💡 Tips</Text>
+            <Text style={styles.tipsText}>• Be clear and concise</Text>
+            <Text style={styles.tipsText}>• Stay professional</Text>
+            <Text style={styles.tipsText}>• Use the information provided</Text>
+          </View>
+        </ScrollView>
+
+        {/* Ready Button */}
+        <View style={styles.prepBottomSection}>
+          <TouchableOpacity
+            style={styles.readyButton}
+            onPress={handleStartConversation}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.readyButtonText}>I'm Ready</Text>
+            <Text style={styles.readyButtonIcon}>→</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // Conversation Screen
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
@@ -825,5 +908,142 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: "#FFFFFF",
+  },
+  // Prep Screen Styles
+  prepContent: {
+    flex: 1,
+  },
+  prepContentContainer: {
+    padding: 24,
+    paddingBottom: 40,
+  },
+  prepHeader: {
+    alignItems: "center",
+    marginBottom: 28,
+  },
+  prepIconContainer: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: COLORS.accentLight,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+  },
+  prepIcon: {
+    fontSize: 36,
+  },
+  prepTitle: {
+    fontSize: 26,
+    fontWeight: "800",
+    color: COLORS.text,
+    marginBottom: 8,
+  },
+  prepSubtitle: {
+    fontSize: 15,
+    color: COLORS.textMuted,
+    textAlign: "center",
+  },
+  situationCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 20,
+    padding: 24,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  situationText: {
+    fontSize: 16,
+    lineHeight: 26,
+    color: COLORS.text,
+  },
+  initiatorCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.primary,
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 20,
+  },
+  initiatorIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 16,
+  },
+  initiatorIconText: {
+    fontSize: 24,
+  },
+  initiatorTextContainer: {
+    flex: 1,
+  },
+  initiatorLabel: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    marginBottom: 4,
+  },
+  initiatorHint: {
+    fontSize: 14,
+    color: "rgba(255, 255, 255, 0.8)",
+  },
+  tipsCard: {
+    backgroundColor: COLORS.warning,
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
+  },
+  tipsTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: COLORS.text,
+    marginBottom: 12,
+  },
+  tipsText: {
+    fontSize: 14,
+    color: COLORS.text,
+    marginBottom: 6,
+    paddingLeft: 4,
+  },
+  prepBottomSection: {
+    paddingHorizontal: 24,
+    paddingVertical: 20,
+    paddingBottom: 32,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    backgroundColor: COLORS.bg,
+  },
+  readyButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLORS.accent,
+    borderRadius: 16,
+    paddingVertical: 18,
+    paddingHorizontal: 32,
+    shadowColor: COLORS.accent,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  readyButtonText: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    marginRight: 8,
+  },
+  readyButtonIcon: {
+    fontSize: 20,
+    color: "#FFFFFF",
+    fontWeight: "700",
   },
 });

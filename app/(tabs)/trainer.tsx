@@ -2,7 +2,7 @@ import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import React from "react";
 import {
-  Dimensions,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -10,51 +10,378 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-const { width } = Dimensions.get("window");
-
-// Color palette - Deep navy with coral accent (same as voice assistant)
+// Color palette - consistent with voice assistant
 const COLORS = {
-  primary: "#1E3A5F",      // Deep navy
-  accent: "#FF6B6B",       // Coral red
-  accentLight: "#FFE5E5",  // Light coral
-  success: "#4ECDC4",      // Teal
-  warning: "#FFE66D",      // Warm yellow
-  bg: "#F8FAFC",           // Off-white
+  primary: "#1E3A5F",
+  accent: "#FF6B6B",
+  accentLight: "#FFE5E5",
+  success: "#4ECDC4",
+  warning: "#FFE66D",
+  bg: "#F8FAFC",
   card: "#FFFFFF",
   text: "#1E3A5F",
   textMuted: "#64748B",
+  textLight: "#94A3B8",
   border: "#E2E8F0",
+};
+
+// Difficulty levels
+type Difficulty = "beginner" | "intermediate" | "advanced";
+
+const DIFFICULTY_CONFIG: Record<Difficulty, { label: string; color: string; bgColor: string }> = {
+  beginner: { label: "Beginner", color: "#059669", bgColor: "#D1FAE5" },
+  intermediate: { label: "Intermediate", color: "#D97706", bgColor: "#FEF3C7" },
+  advanced: { label: "Advanced", color: "#DC2626", bgColor: "#FEE2E2" },
 };
 
 // Scenario definitions
 interface Scenario {
   id: string;
   title: string;
-  subtitle: string;
+  category: string;
   description: string;
   icon: string;
-  gradient: string[];
+  accentColor: string;
   systemPrompt: string;
   initialMessage: string;
+  situation: string;
+  userInitiates: boolean;
+  difficulty: Difficulty;
+  duration: string;
 }
 
 const SCENARIOS: Scenario[] = [
   {
     id: "introduce-yourself",
-    title: "Introduce Yourself",
-    subtitle: "Corporate Introduction",
-    description: "Practice your professional self-introduction for meetings, interviews, and networking events.",
+    title: "Meet the Director",
+    category: "Networking",
+    description: "Introduce yourself to a Director at a tech startup",
     icon: "👋",
-    gradient: ["#1E3A5F", "#0F2942"],  // Deep navy matching primary
-    systemPrompt: `Act as the Manager at a bank. I am a new Data Analyst joining today on my first day. We are in the office, it's Monday 10:30 AM. Approach my desk and welcome me.
+    accentColor: "#1E3A5F",
+    difficulty: "beginner",
+    duration: "2-3 min",
+    systemPrompt: `Act as a friendly Director at a tech startup. A new Software Engineer from the backend team approaches you in the breakroom to introduce themselves.
+
+Setting: Breakroom/pantry, morning coffee time. The employee initiates the conversation.
 
 Constraints:
-- Goal: Get a brief introduction.
-- Do not drag the conversation.
-- Ending: End with '<conv_completed/>' after your final message.`,
-    initialMessage: "Hey, welcome to the team! We're so glad to have you here. So, tell me a bit about yourself?",
+1. Goal: Learn their name, role, team, and what they're working on.
+2. Be warm and encouraging. If they seem nervous, help them feel comfortable.
+3. Keep responses short (10-25 words).
+4. End with '<conv_completed/>' after your final message.`,
+    initialMessage: "",
+    situation: `You are a newly joined Software Engineer on the backend team at a tech startup. You joined 2 weeks ago and are currently in onboarding - going through documentation and setting up your development environment.
+
+You're in the breakroom getting coffee when you spot a Director at the coffee machine.`,
+    userInitiates: true,
   },
-  // More scenarios can be added here
+  {
+    id: "leaving-early",
+    title: "Leaving Early",
+    category: "Requests",
+    description: "Ask your boss for permission to leave work early",
+    icon: "🕐",
+    accentColor: "#7C3AED",
+    difficulty: "intermediate",
+    duration: "3-4 min",
+    systemPrompt: `Act as a strict but fair boss at an IT company. A Software Engineer has walked into your office to request leaving early at 2 PM for a personal reason.
+
+Setting: Your office, around 1 PM. The employee initiates the request.
+
+Your behavior:
+1. Don't immediately approve - show some restraint
+2. Ask about work status and deadlines
+3. May express mild concern
+4. Eventually make a decision
+
+Constraints:
+1. Goal: Handle the leave request professionally
+2. Keep responses short (10-30 words)
+3. End with '<conv_completed/>' after your final STATEMENT (not a question)`,
+    initialMessage: "",
+    situation: `You are a Software Engineer at an IT company. You need to leave at 2 PM today for a personal commitment.
+
+Your Work Status:
+• Completed: API integration for the payments module
+• Pending: Code review for the PR
+• Priya can cover for you (you've already informed her)
+• There's a 3 PM sprint sync meeting - Priya will cover
+
+You're walking into your boss's office to request permission to leave early.`,
+    userInitiates: true,
+  },
+  {
+    id: "status-update",
+    title: "Status Update",
+    category: "Reporting",
+    description: "Give a quick project status update to your busy boss",
+    icon: "📊",
+    accentColor: "#059669",
+    difficulty: "beginner",
+    duration: "2-3 min",
+    systemPrompt: `Act as a busy boss at a tech company. You're walking to a meeting and need a quick status update on the Customer Dashboard project from your team member.
+
+Setting: Corridor, you're in a hurry. You initiate by asking about the project.
+
+Your behavior:
+1. Ask for status quickly
+2. If they ramble, cut them off - "Just give me the bottom line"
+3. May ask one quick follow-up about blockers or timeline
+4. Wrap up quickly once you have what you need
+
+Constraints:
+1. Keep responses short (10-20 words)
+2. End with '<conv_completed/>' after your final STATEMENT (not a question)`,
+    initialMessage: "Hey! Quick - how's the Customer Dashboard coming along?",
+    situation: `You are a Software Engineer working on the Customer Dashboard Revamp project at a tech company. Your boss spots you in the corridor while rushing to a meeting.
+
+Project Status:
+• Progress: 70-80% complete
+• Completed: UI components and design implementation
+• Blocker: API integration from Vikram's team (expected resolution: EOD today or tomorrow)
+• Target completion: Thursday/Friday this week
+• Pending: API integration and testing`,
+    userInitiates: false,
+  },
+  {
+    id: "sick-call",
+    title: "Sick Call",
+    category: "Communication",
+    description: "Call your boss to inform them you're unwell",
+    icon: "🤒",
+    accentColor: "#DC2626",
+    difficulty: "beginner",
+    duration: "2-3 min",
+    systemPrompt: `Act as an understanding boss at a software company. Your employee is calling to inform you they're sick and won't be coming in.
+
+Setting: Phone call. The employee initiates.
+
+Your behavior:
+1. Be caring and supportive - they're unwell
+2. If they don't mention coverage, ask briefly
+3. Wish them well and tell them to rest
+4. Keep it brief - they're sick
+
+Constraints:
+1. Keep responses short (10-25 words)
+2. End with '<conv_completed/>' after your final caring message`,
+    initialMessage: "",
+    situation: `You are a Software Engineer at a software company. You woke up this morning with a fever and cannot come to work today.
+
+Details:
+• Reason: Fever
+• Urgent task: Bug fix for production issue in payments module
+• Rahul is covering (you've already messaged him)
+• Duration: Today only (will reassess how you're feeling tomorrow)
+
+You're calling your boss to inform them.`,
+    userInitiates: true,
+  },
+  {
+    id: "impossible-deadline",
+    title: "Impossible Deadline",
+    category: "Negotiation",
+    description: "Discuss an unrealistic deadline with facts and data",
+    icon: "⏰",
+    accentColor: "#EA580C",
+    difficulty: "advanced",
+    duration: "4-5 min",
+    systemPrompt: `Act as a busy but reasonable boss at a product company. Your employee has come to discuss a tight deadline you set for the Payment Gateway Integration (2 days).
+
+Setting: Your office. Employee initiates the conversation.
+
+Your behavior:
+1. If they just complain without data, ask for specifics (hours, team size, blockers)
+2. If they present numbers/math, consider them seriously
+3. If they propose alternatives, discuss tradeoffs
+4. End with a decision or clear next step
+5. Keep discussion about TIME and RESOURCES - do NOT ask about technical implementation details
+
+Constraints:
+1. Keep responses short (15-35 words)
+2. End with '<conv_completed/>' after your final decision/statement`,
+    initialMessage: "",
+    situation: `You are a Software Engineer at a product company. Your boss has set a 2-day deadline for the Payment Gateway Integration project.
+
+The Facts:
+• Boss's deadline: 2 days
+• Realistic estimate: 5-6 days
+• Team size: 3 developers
+• Total work required: 120 hours
+• The math: 120 hours ÷ 3 devs = 40 hours each = 5 days minimum
+• Blockers:
+  - Third-party API documentation still pending from vendor
+  - QA needs minimum 1 day for security testing
+
+You're at your boss's office door to discuss this deadline.`,
+    userInitiates: true,
+  },
+  {
+    id: "non-responder",
+    title: "Non-Responder",
+    category: "Collaboration",
+    description: "Follow up with a colleague who hasn't replied to emails",
+    icon: "📧",
+    accentColor: "#0891B2",
+    difficulty: "intermediate",
+    duration: "3-4 min",
+    systemPrompt: `Act as Priya, a busy Software Engineer at a fintech company. A colleague has walked to your desk because you haven't replied to their emails about API specs.
+
+Setting: Your desk. Colleague initiates the conversation.
+
+Your behavior:
+1. You're genuinely busy, not malicious - feel a bit guilty
+2. If they're aggressive/passive-aggressive: Be defensive, give vague answers
+3. If they're friendly: Be apologetic and cooperative, give specific time
+4. If they offer help: Appreciate it
+
+Constraints:
+1. Keep responses short (15-30 words)
+2. End with '<conv_completed/>' after your final response`,
+    initialMessage: "",
+    situation: `You are a Software Engineer at a fintech company. You need something from your colleague Priya, but she hasn't responded to your emails.
+
+Details:
+• What you need: API endpoint specifications for user authentication module
+• Your deadline: Tomorrow morning standup
+• Emails sent: 2 emails over the past 3 days - no response
+• Why urgent: Can't proceed with integration testing without it
+
+You've walked to Priya's desk. She looks up from her screen.`,
+    userInitiates: true,
+  },
+  {
+    id: "scope-check",
+    title: "Scope Check",
+    category: "Prioritization",
+    description: "Handle a new task when you already have a deadline",
+    icon: "📋",
+    accentColor: "#7C3AED",
+    difficulty: "intermediate",
+    duration: "3-4 min",
+    systemPrompt: `Act as a busy manager at an e-commerce company. You're assigning a bug fix task to a team member.
+
+Setting: Office. You initiate by assigning the task.
+
+Your behavior:
+1. If they just say "yes" - wrap up quickly
+2. If they mention other work - listen and help prioritize
+3. If they ask which is priority - give a clear answer
+4. Be reasonable, not demanding
+5. Keep discussion about priorities, not technical details
+
+Constraints:
+1. Keep responses short (15-30 words)
+2. End with '<conv_completed/>' after your final message`,
+    initialMessage: "Hey, I need you to pick up a bug fix in the reporting module. Some users are affected.",
+    situation: `You are a Software Engineer at an e-commerce company. Your manager is about to assign you a new task.
+
+Your Current Work:
+• Current task: API migration for client demo
+• Current deadline: Thursday (2 days away)
+
+New Task Being Assigned:
+• New task: Bug fix in the reporting module
+• Reason: Some users are affected`,
+    userInitiates: false,
+  },
+  {
+    id: "messed-up",
+    title: "Messed Up",
+    category: "Accountability",
+    description: "Confess to your manager about a production mistake",
+    icon: "😰",
+    accentColor: "#DC2626",
+    difficulty: "advanced",
+    duration: "4-5 min",
+    systemPrompt: `Act as a manager at an MNC. Your team member has come to confess they made a mistake affecting production.
+
+Setting: Your office. Employee initiates the confession.
+
+Your behavior:
+1. If they blame others/system: Push for their role
+2. If they own it clearly: Focus on the fix
+3. If they're vague: Ask for specifics
+4. Focus on solutions, not punishment
+
+Constraints:
+1. Keep responses short (15-30 words)
+2. End with '<conv_completed/>' after your final message`,
+    initialMessage: "",
+    situation: `You are a Software Engineer at an MNC. You made a serious mistake and need to tell your boss before they find out from someone else.
+
+What Happened:
+• Mistake: Accidentally ran DELETE query on production users table (you meant to run it on staging)
+• Impact: About 500 user records affected
+• Recovery: Backup exists from last night - can restore in 2 hours
+• Prevention: Will add confirmation prompt and environment check to the script
+
+You're at your boss's office to confess.`,
+    userInitiates: true,
+  },
+  {
+    id: "refuse-to-cover",
+    title: "Refuse to Cover",
+    category: "Ethics",
+    description: "Navigate an awkward request from a colleague to lie",
+    icon: "🤥",
+    accentColor: "#4B5563",
+    difficulty: "advanced",
+    duration: "3-4 min",
+    systemPrompt: `Act as Rahul, a colleague at a consulting firm. You need your colleague to cover for you - tell boss you were in a client meeting.
+
+Setting: Office. You initiate by asking the favor.
+
+Your behavior:
+1. Ask for the favor nicely
+2. If they refuse, you can push once gently
+3. Accept their final decision gracefully
+4. Don't get angry or threaten
+
+Constraints:
+1. Keep responses short (10-25 words)
+2. End with '<conv_completed/>' after your final response`,
+    initialMessage: "Hey, quick favor - if boss asks, can you say I was in a client meeting earlier?",
+    situation: `You are a Software Engineer at a consulting firm. Your colleague Rahul approaches you with a request.
+
+The Situation:
+• Rahul's request: "If boss asks, can you say I was in a client meeting?"
+• The truth: Rahul was actually late / took a long break
+• Your position: You don't want to lie, but you also don't want to damage your relationship with Rahul`,
+    userInitiates: false,
+  },
+  {
+    id: "over-promise",
+    title: "Over-Promise",
+    category: "Expectation Management",
+    description: "Inform your boss you can't meet a promised deadline",
+    icon: "📅",
+    accentColor: "#F59E0B",
+    difficulty: "intermediate",
+    duration: "3-4 min",
+    systemPrompt: `Act as a manager at a tech startup. Your team member promised Tuesday delivery but is coming to talk to you on Monday.
+
+Your behavior:
+1. If they inform early with plan: Appreciate honesty
+2. If vague: Ask for specifics
+3. Focus on solutions
+
+Constraints:
+1. Keep responses short (15-30 words)
+2. End with '<conv_completed/>' after your final message`,
+    initialMessage: "",
+    situation: `You are a Software Engineer at a tech startup. You promised to deliver the user dashboard feature by Tuesday, but you now realize you won't make it. It's Monday.
+
+The Situation:
+• Original promise: Tuesday delivery of user dashboard feature
+• New realistic timeline: Thursday
+• Progress: 70% complete - backend is done
+• What's left: Frontend polish and testing
+• Reason: Underestimated frontend complexity
+
+You're going to your boss's office.`,
+    userInitiates: true,
+  },
 ];
 
 export default function TrainerScreen() {
@@ -63,14 +390,18 @@ export default function TrainerScreen() {
   const handleScenarioPress = (scenario: Scenario) => {
     router.push({
       pathname: "/scenario/[id]",
-      params: { 
+      params: {
         id: scenario.id,
         title: scenario.title,
         systemPrompt: scenario.systemPrompt,
         initialMessage: scenario.initialMessage,
+        situation: scenario.situation,
+        userInitiates: scenario.userInitiates ? "true" : "false",
       },
     });
   };
+
+  const difficultyConfig = (difficulty: Difficulty) => DIFFICULTY_CONFIG[difficulty];
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -78,48 +409,90 @@ export default function TrainerScreen() {
 
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>Scenario Trainer</Text>
+        <View style={styles.headerTop}>
+          <Text style={styles.title}>Practice</Text>
+          <View style={styles.statsContainer}>
+            <View style={styles.statBadge}>
+              <Text style={styles.statNumber}>{SCENARIOS.length}</Text>
+              <Text style={styles.statLabel}>Scenarios</Text>
+            </View>
+          </View>
+        </View>
         <Text style={styles.subtitle}>
-          Practice real-world corporate communication
+          Build confidence with real workplace conversations
         </Text>
       </View>
 
-      {/* Scenarios Grid */}
-      <View style={styles.scenariosContainer}>
-        <Text style={styles.sectionTitle}>TRAINING SCENARIOS</Text>
-        
-        {SCENARIOS.map((scenario) => (
-          <TouchableOpacity
-            key={scenario.id}
-            style={styles.scenarioCard}
-            onPress={() => handleScenarioPress(scenario)}
-            activeOpacity={0.9}
-          >
-            <View style={[styles.cardGradient, { backgroundColor: scenario.gradient[0] }]}>
-              <View style={styles.cardIconContainer}>
-                <Text style={styles.cardIcon}>{scenario.icon}</Text>
-              </View>
-              <View style={styles.cardContent}>
-                <Text style={styles.cardSubtitle}>{scenario.subtitle}</Text>
-                <Text style={styles.cardTitle}>{scenario.title}</Text>
-                <Text style={styles.cardDescription}>{scenario.description}</Text>
-              </View>
-              <View style={styles.cardArrow}>
-                <Text style={styles.cardArrowText}>→</Text>
-              </View>
-            </View>
-          </TouchableOpacity>
-        ))}
+      {/* Scenarios List */}
+      <ScrollView
+        style={styles.scenariosContainer}
+        contentContainerStyle={styles.scenariosContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {SCENARIOS.map((scenario, index) => {
+          const config = difficultyConfig(scenario.difficulty);
+          return (
+            <TouchableOpacity
+              key={scenario.id}
+              style={styles.scenarioCard}
+              onPress={() => handleScenarioPress(scenario)}
+              activeOpacity={0.7}
+            >
+              {/* Left accent bar */}
+              <View style={[styles.accentBar, { backgroundColor: scenario.accentColor }]} />
 
-        {/* Coming Soon Placeholder */}
-        <View style={styles.comingSoonCard}>
-          <Text style={styles.comingSoonIcon}>🚀</Text>
-          <Text style={styles.comingSoonTitle}>More Scenarios Coming Soon</Text>
-          <Text style={styles.comingSoonText}>
-            Elevator pitch, salary negotiation, performance review, and more...
-          </Text>
+              {/* Card content */}
+              <View style={styles.cardBody}>
+                {/* Top row: Icon + Title + Arrow */}
+                <View style={styles.cardTopRow}>
+                  <View style={[styles.iconContainer, { backgroundColor: scenario.accentColor + "15" }]}>
+                    <Text style={styles.icon}>{scenario.icon}</Text>
+                  </View>
+                  <View style={styles.titleContainer}>
+                    <Text style={styles.cardTitle}>{scenario.title}</Text>
+                    <Text style={styles.cardCategory}>{scenario.category}</Text>
+                  </View>
+                  <View style={styles.arrowContainer}>
+                    <Text style={styles.arrow}>›</Text>
+                  </View>
+                </View>
+
+                {/* Description */}
+                <Text style={styles.cardDescription} numberOfLines={2}>
+                  {scenario.description}
+                </Text>
+
+                {/* Bottom row: Badges */}
+                <View style={styles.badgeRow}>
+                  {/* Difficulty badge */}
+                  <View style={[styles.badge, { backgroundColor: config.bgColor }]}>
+                    <Text style={[styles.badgeText, { color: config.color }]}>
+                      {config.label}
+                    </Text>
+                  </View>
+
+                  {/* Duration badge */}
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>⏱ {scenario.duration}</Text>
+                  </View>
+
+                  {/* Initiator badge */}
+                  <View style={[styles.badge, styles.initiatorBadge]}>
+                    <Text style={styles.badgeText}>
+                      {scenario.userInitiates ? "🎤 You start" : "🔊 They start"}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+
+        {/* Footer */}
+        <View style={styles.footer}>
+          <Text style={styles.footerText}>More scenarios coming soon</Text>
         </View>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -130,121 +503,153 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.bg,
   },
   header: {
-    paddingHorizontal: 24,
-    paddingTop: 20,
-    paddingBottom: 24,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 20,
+    backgroundColor: COLORS.bg,
+  },
+  headerTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
   },
   title: {
-    fontSize: 32,
+    fontSize: 34,
     fontWeight: "800",
     color: COLORS.primary,
     letterSpacing: -0.5,
   },
+  statsContainer: {
+    flexDirection: "row",
+  },
+  statBadge: {
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  statNumber: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  statLabel: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.8)",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
   subtitle: {
-    fontSize: 16,
+    fontSize: 15,
     color: COLORS.textMuted,
-    marginTop: 8,
+    lineHeight: 22,
   },
   scenariosContainer: {
     flex: 1,
-    paddingHorizontal: 20,
   },
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: COLORS.textMuted,
-    letterSpacing: 1.5,
-    marginBottom: 16,
-    marginLeft: 4,
+  scenariosContent: {
+    paddingHorizontal: 20,
+    paddingBottom: 30,
   },
   scenarioCard: {
-    marginBottom: 16,
-    borderRadius: 20,
-    overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    elevation: 6,
-  },
-  cardGradient: {
-    padding: 24,
-    minHeight: 180,
-  },
-  cardIconContainer: {
-    width: 56,
-    height: 56,
+    flexDirection: "row",
+    backgroundColor: COLORS.card,
     borderRadius: 16,
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    marginBottom: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+    overflow: "hidden",
+  },
+  accentBar: {
+    width: 4,
+  },
+  cardBody: {
+    flex: 1,
+    padding: 16,
+  },
+  cardTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  iconContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 16,
   },
-  cardIcon: {
-    fontSize: 28,
+  icon: {
+    fontSize: 22,
   },
-  cardContent: {
+  titleContainer: {
     flex: 1,
-  },
-  cardSubtitle: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "rgba(255, 255, 255, 0.7)",
-    textTransform: "uppercase",
-    letterSpacing: 1,
-    marginBottom: 4,
+    marginLeft: 12,
   },
   cardTitle: {
-    fontSize: 24,
+    fontSize: 17,
     fontWeight: "700",
-    color: "#FFFFFF",
-    marginBottom: 8,
+    color: COLORS.text,
+    marginBottom: 2,
+  },
+  cardCategory: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: COLORS.textLight,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  arrowContainer: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: COLORS.bg,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  arrow: {
+    fontSize: 24,
+    color: COLORS.textMuted,
+    fontWeight: "300",
   },
   cardDescription: {
     fontSize: 14,
-    color: "rgba(255, 255, 255, 0.85)",
+    color: COLORS.textMuted,
     lineHeight: 20,
-  },
-  cardArrow: {
-    position: "absolute",
-    right: 24,
-    top: 24,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cardArrowText: {
-    fontSize: 20,
-    color: "#FFFFFF",
-    fontWeight: "600",
-  },
-  comingSoonCard: {
-    backgroundColor: COLORS.card,
-    borderRadius: 16,
-    padding: 24,
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: COLORS.border,
-    borderStyle: "dashed",
-  },
-  comingSoonIcon: {
-    fontSize: 32,
     marginBottom: 12,
   },
-  comingSoonTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: COLORS.textMuted,
-    marginBottom: 8,
+  badgeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
   },
-  comingSoonText: {
-    fontSize: 14,
+  badge: {
+    backgroundColor: COLORS.bg,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  badgeText: {
+    fontSize: 11,
+    fontWeight: "600",
     color: COLORS.textMuted,
-    textAlign: "center",
-    lineHeight: 20,
+  },
+  initiatorBadge: {
+    backgroundColor: COLORS.accentLight,
+  },
+  footer: {
+    alignItems: "center",
+    paddingVertical: 20,
+  },
+  footerText: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    fontWeight: "500",
   },
 });
-

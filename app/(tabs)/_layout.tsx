@@ -3,52 +3,69 @@ import React from 'react';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+
+// App color palette - consistent with voice assistant
+const COLORS = {
+  primary: "#1E3A5F",
+  accent: "#FF6B6B",
+  bg: "#F8FAFC",
+  textMuted: "#64748B",
+};
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
-
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
+        tabBarActiveTintColor: COLORS.accent,
+        tabBarInactiveTintColor: COLORS.textMuted,
+        tabBarStyle: {
+          backgroundColor: '#FFFFFF',
+          borderTopColor: '#E2E8F0',
+          borderTopWidth: 1,
+          paddingTop: 8,
+          paddingBottom: 8,
+          height: 65,
+        },
+        tabBarLabelStyle: {
+          fontSize: 12,
+          fontWeight: '600',
+        },
         headerShown: false,
         tabBarButton: HapticTab,
       }}>
+      {/* Tab 1: Trainer */}
+      <Tabs.Screen
+        name="trainer"
+        options={{
+          title: 'Practice',
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="person.crop.circle.badge.checkmark" color={color} />,
+        }}
+      />
+      {/* Tab 2: Voice Assistant */}
       <Tabs.Screen
         name="voice"
         options={{
           title: 'Assistant',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="waveform.circle.fill" color={color} />,
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="waveform.circle.fill" color={color} />,
         }}
       />
+      {/* Hidden tabs */}
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Whisper',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="mic.fill" color={color} />,
+          href: null, // Hide from tab bar
         }}
       />
       <Tabs.Screen
         name="chat"
         options={{
-          title: 'AI Chat',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="bubble.left.and.bubble.right.fill" color={color} />,
+          href: null, // Hide from tab bar
         }}
       />
       <Tabs.Screen
         name="tts"
         options={{
-          title: 'TTS',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="speaker.wave.3.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="trainer"
-        options={{
-          title: 'Trainer',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="person.crop.circle.badge.checkmark" color={color} />,
+          href: null, // Hide from tab bar
         }}
       />
     </Tabs>

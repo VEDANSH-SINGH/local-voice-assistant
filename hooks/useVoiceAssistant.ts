@@ -94,8 +94,6 @@ const SPLIT_CONJUNCTIONS =
   /\b(but|so|because|although|however|therefore|meanwhile|furthermore)\b/i
 // Minimum words per phrase
 const MIN_WORDS_PER_PHRASE = 6
-// Maximum words for first chunk (to speed up time-to-first-audio)
-const MAX_FIRST_CHUNK_WORDS = 15
 
 export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
   const mergedConfig = { ...DEFAULT_CONFIG, ...config }
@@ -134,7 +132,6 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
   const accumulatedTextRef = useRef<string>("")
   const processedSentencesRef = useRef<Set<string>>(new Set())
   const queueIdCounterRef = useRef<number>(0)
-  const isFirstChunkRef = useRef<boolean>(true) // Track if first chunk needs eager extraction
 
   // Hooks
   const whisper = useWhisperModels()
@@ -339,7 +336,6 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       const phrases: string[] = []
       let currentPhrase = ""
       let remainder = text
-      const isFirstChunk = isFirstChunkRef.current
 
       // Process character by character to find natural break points
       let i = 0
@@ -364,46 +360,17 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
 
         const wordCount = countWords(currentPhrase)
 
-        // First chunk: force break at MAX_FIRST_CHUNK_WORDS even without punctuation
-        // But ONLY break at word boundaries (after a space)
-        if (
-          isFirstChunk &&
-          phrases.length === 0 &&
-          wordCount >= MAX_FIRST_CHUNK_WORDS &&
-          (text[i] === " " || i === text.length - 1)  // Only break at word boundary
-        ) {
-          // Ensure we break at word boundary - find last space if current char isn't a space
-          let phraseToAdd = currentPhrase.trim()
-          if (text[i] !== " " && i !== text.length - 1) {
-            const lastSpaceIdx = phraseToAdd.lastIndexOf(" ")
-            if (lastSpaceIdx > 0) {
-              // Keep the partial word for next chunk
-              const overflow = phraseToAdd.slice(lastSpaceIdx + 1)
-              phraseToAdd = phraseToAdd.slice(0, lastSpaceIdx)
-              // Note: overflow will be lost here, but since we only break at space this shouldn't happen
-            }
-          }
-          phrases.push(phraseToAdd)
-          currentPhrase = ""
-          isFirstChunkRef.current = false // Mark first chunk as extracted
-          tLog(
-            `⚡ First chunk forced at ${countWords(phraseToAdd)} words for faster playback`
-          )
-        }
-        // Check if we should break here (normal rules)
-        else if (isPunctuation || isConjunction) {
-          // Only break if we have enough words
+        // Break only on punctuation or conjunction (with minimum word count)
+        if (isPunctuation || isConjunction) {
           if (wordCount >= MIN_WORDS_PER_PHRASE) {
             // For punctuation, include it; for conjunction, don't include the space
             if (isPunctuation) {
               phrases.push(currentPhrase.trim())
               currentPhrase = ""
-              if (isFirstChunk) isFirstChunkRef.current = false
             } else if (isConjunction) {
               // Break before the conjunction
               phrases.push(currentPhrase.trim())
               currentPhrase = ""
-              if (isFirstChunk) isFirstChunkRef.current = false
             }
           }
           // If not enough words, keep accumulating
@@ -425,7 +392,6 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         if (endsWithPunctuation && wordCount >= MIN_WORDS_PER_PHRASE) {
           phrases.push(remainder)
           remainder = ""
-          if (isFirstChunk) isFirstChunkRef.current = false
         }
       }
 
@@ -469,8 +435,14 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
   // Queue a phrase for TTS
   const queueSentenceForTTS = useCallback(
     (sentence: string) => {
+      // Debug: log original sentence before cleaning
+      tLog(`🔍 Original phrase (${sentence.length} chars): "${sentence}"`)
+      
       // Clean the text first
       const cleanedText = cleanTextForTTS(sentence)
+      
+      // Debug: log cleaned text
+      tLog(`🔍 Cleaned phrase (${cleanedText.length} chars): "${cleanedText}"`)
 
       // Skip if too short or empty after cleaning
       if (cleanedText.length < 3) {
@@ -848,7 +820,6 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       setPipelineState("idle")
       setTtsQueue([])
       enqueuedItemsRef.current.clear() // Reset for next conversation
-      isFirstChunkRef.current = true // Reset for next conversation
     }
   }, [
     ttsQueue,
@@ -889,6 +860,8 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
   const handleLLMComplete = useCallback(() => {
     // Queue any remaining text
     const remainingText = accumulatedTextRef.current.trim()
+    tLog(`🏁 LLM Complete - Remaining text (${remainingText.length} chars): "${remainingText}"`)
+    
     if (
       remainingText.length > 0 &&
       !processedSentencesRef.current.has(remainingText)
@@ -920,7 +893,6 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       processedSentencesRef.current.clear()
       playbackQueueRef.current = []
       enqueuedItemsRef.current.clear()
-      isFirstChunkRef.current = true // Reset for eager first chunk extraction
 
       tLog("🎤 Starting voice input...")
 
@@ -1057,7 +1029,6 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         processedSentencesRef.current.clear()
         playbackQueueRef.current = []
         enqueuedItemsRef.current.clear()
-        isFirstChunkRef.current = true // Reset for eager first chunk extraction
 
         console.log(`💬 Text message: "${trimmedText}"`)
 
@@ -1125,7 +1096,6 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     // Clear playback queue
     playbackQueueRef.current = []
     enqueuedItemsRef.current.clear()
-    isFirstChunkRef.current = true // Reset for next conversation
 
     // Stop transcription
     if (currentTranscriberRef.current?.stop) {
