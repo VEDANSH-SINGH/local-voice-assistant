@@ -967,7 +967,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       // Build messages for LLM
       const messages: ChatMessage[] = [
         {
-          role: "system",
+          role: "user",
           content: mergedConfig.systemPrompt || DEFAULT_CONFIG.systemPrompt!,
         },
         ...newHistory,
@@ -1047,7 +1047,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         // Build messages for LLM
         const messages: ChatMessage[] = [
           {
-            role: "system",
+            role: "user",
             content: mergedConfig.systemPrompt || DEFAULT_CONFIG.systemPrompt!,
           },
           ...newHistory,

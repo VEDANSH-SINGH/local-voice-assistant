@@ -53,7 +53,7 @@ interface Scenario {
 const SCENARIOS: Scenario[] = [
   {
     id: "introduce-yourself",
-    title: "Meet the Director",
+    title: "Pantry Intro",
     category: "Networking",
     description: "Introduce yourself to a Director at a tech startup",
     icon: "👋",
@@ -72,7 +72,7 @@ Constraints:
     initialMessage: "",
     situation: `You are a newly joined Software Engineer on the backend team at a tech startup. You joined 2 weeks ago and are currently in onboarding - going through documentation and setting up your development environment.
 
-You're in the breakroom getting coffee when you spot a Director at the coffee machine.`,
+You spotted a Director in the breakroom getting coffee. This is your chance to introduce yourself.`,
     userInitiates: true,
   },
   {
@@ -84,7 +84,7 @@ You're in the breakroom getting coffee when you spot a Director at the coffee ma
     accentColor: "#7C3AED",
     difficulty: "intermediate",
     duration: "3-4 min",
-    systemPrompt: `Act as a strict but fair boss at an IT company. A Software Engineer has walked into your office to request leaving early at 2 PM for a personal reason.
+    systemPrompt: `Act as a strict but fair boss at a tech startup. A employee has walked into your office to request leaving early at 2 PM for a personal reason.
 
 Setting: Your office, around 1 PM. The employee initiates the request.
 
@@ -99,12 +99,12 @@ Constraints:
 2. Keep responses short (10-30 words)
 3. End with '<conv_completed/>' after your final STATEMENT (not a question)`,
     initialMessage: "",
-    situation: `You are a Software Engineer at an IT company. You need to leave at 2 PM today for a personal commitment.
+    situation: `You are a Software Engineer at a tech startup. You need to leave office early today at 2 PM for a personal commitment.
 
 Your Work Status:
 • Completed: API integration for the payments module
 • Pending: Code review for the PR
-• Priya can cover for you (you've already informed her)
+• Priya can cover if needed (you've already informed her)
 • There's a 3 PM sprint sync meeting - Priya will cover
 
 You're walking into your boss's office to request permission to leave early.`,
@@ -152,7 +152,7 @@ Project Status:
     accentColor: "#DC2626",
     difficulty: "beginner",
     duration: "2-3 min",
-    systemPrompt: `Act as an understanding boss at a software company. Your employee is calling to inform you they're sick and won't be coming in.
+    systemPrompt: `Act as an understanding boss at a tech startup. Your employee is calling to inform you they're sick and won't be coming in.
 
 Setting: Phone call. The employee initiates.
 
@@ -166,15 +166,15 @@ Constraints:
 1. Keep responses short (10-25 words)
 2. End with '<conv_completed/>' after your final caring message`,
     initialMessage: "",
-    situation: `You are a Software Engineer at a software company. You woke up this morning with a fever and cannot come to work today.
+    situation: `You are a Software Engineer at a tech startup. You woke up with a fever this morning and cannot come to office.
 
 Details:
 • Reason: Fever
-• Urgent task: Bug fix for production issue in payments module
-• Rahul is covering (you've already messaged him)
+• Urgent task: Code review scheduled for today
+• Rahul from your team can cover your urgent tasks (you've already messaged him)
 • Duration: Today only (will reassess how you're feeling tomorrow)
 
-You're calling your boss to inform them.`,
+You need to call your boss to inform about your absence.`,
     userInitiates: true,
   },
   {
@@ -186,7 +186,7 @@ You're calling your boss to inform them.`,
     accentColor: "#EA580C",
     difficulty: "advanced",
     duration: "4-5 min",
-    systemPrompt: `Act as a busy but reasonable boss at a product company. Your employee has come to discuss a tight deadline you set for the Payment Gateway Integration (2 days).
+    systemPrompt: `Act as a busy but reasonable boss at a tech startup. Your employee has come to discuss a tight deadline you set for the Payment Gateway Integration (2 days).
 
 Setting: Your office. Employee initiates the conversation.
 
@@ -201,7 +201,7 @@ Constraints:
 1. Keep responses short (15-35 words)
 2. End with '<conv_completed/>' after your final decision/statement`,
     initialMessage: "",
-    situation: `You are a Software Engineer at a product company. Your boss has set a 2-day deadline for the Payment Gateway Integration project.
+    situation: `You are a Software Engineer at a tech startup. Your boss has set a 2-day deadline for the Payment Gateway Integration project.
 
 The Facts:
 • Boss's deadline: 2 days
@@ -210,7 +210,7 @@ The Facts:
 • Total work required: 120 hours
 • The math: 120 hours ÷ 3 devs = 40 hours each = 5 days minimum
 • Blockers:
-  - Third-party API documentation still pending from vendor
+  - API documentation still pending from vendor
   - QA needs minimum 1 day for security testing
 
 You're at your boss's office door to discuss this deadline.`,
@@ -225,7 +225,7 @@ You're at your boss's office door to discuss this deadline.`,
     accentColor: "#0891B2",
     difficulty: "intermediate",
     duration: "3-4 min",
-    systemPrompt: `Act as Priya, a busy Software Engineer at a fintech company. A colleague has walked to your desk because you haven't replied to their emails about API specs.
+    systemPrompt: `Act as Priya, a busy Software Engineer at a tech startup. A colleague has walked to your desk because you haven't replied to their emails about API specs.
 
 Setting: Your desk. Colleague initiates the conversation.
 
@@ -239,15 +239,15 @@ Constraints:
 1. Keep responses short (15-30 words)
 2. End with '<conv_completed/>' after your final response`,
     initialMessage: "",
-    situation: `You are a Software Engineer at a fintech company. You need something from your colleague Priya, but she hasn't responded to your emails.
+    situation: `You are a Software Engineer at a tech startup. You need API endpoint specifications for the user authentication module from Priya, but she hasn't responded to your emails.
 
 Details:
 • What you need: API endpoint specifications for user authentication module
-• Your deadline: Tomorrow morning standup
+• Your deadline: Tomorrow standup
 • Emails sent: 2 emails over the past 3 days - no response
 • Why urgent: Can't proceed with integration testing without it
 
-You've walked to Priya's desk. She looks up from her screen.`,
+You've decided to walk to her desk to get an answer in person.`,
     userInitiates: true,
   },
   {
@@ -259,7 +259,7 @@ You've walked to Priya's desk. She looks up from her screen.`,
     accentColor: "#7C3AED",
     difficulty: "intermediate",
     duration: "3-4 min",
-    systemPrompt: `Act as a busy manager at an e-commerce company. You're assigning a bug fix task to a team member.
+    systemPrompt: `Act as a busy manager at a tech startup. You're assigning a bug fix task to a team member.
 
 Setting: Office. You initiate by assigning the task.
 
@@ -274,15 +274,17 @@ Constraints:
 1. Keep responses short (15-30 words)
 2. End with '<conv_completed/>' after your final message`,
     initialMessage: "Hey, I need you to pick up a bug fix in the reporting module. Some users are affected.",
-    situation: `You are a Software Engineer at an e-commerce company. Your manager is about to assign you a new task.
+    situation: `You are a Software Engineer at a tech startup. Your manager just walked up to assign you a new task.
 
 Your Current Work:
-• Current task: API migration for client demo
+• Current task: API migration task with a client demo
 • Current deadline: Thursday (2 days away)
 
 New Task Being Assigned:
 • New task: Bug fix in the reporting module
-• Reason: Some users are affected`,
+• Reason: Some users are affected
+
+You need to clarify priorities before just saying yes to everything.`,
     userInitiates: false,
   },
   {
@@ -294,7 +296,7 @@ New Task Being Assigned:
     accentColor: "#DC2626",
     difficulty: "advanced",
     duration: "4-5 min",
-    systemPrompt: `Act as a manager at an MNC. Your team member has come to confess they made a mistake affecting production.
+    systemPrompt: `Act as a manager at a tech startup. Your team member has come to confess they made a mistake affecting production.
 
 Setting: Your office. Employee initiates the confession.
 
@@ -308,15 +310,15 @@ Constraints:
 1. Keep responses short (15-30 words)
 2. End with '<conv_completed/>' after your final message`,
     initialMessage: "",
-    situation: `You are a Software Engineer at an MNC. You made a serious mistake and need to tell your boss before they find out from someone else.
+    situation: `You are a Software Engineer at a tech startup. You accidentally ran a DELETE query on the production database instead of the staging database.
 
 What Happened:
-• Mistake: Accidentally ran DELETE query on production users table (you meant to run it on staging)
+• Mistake: Ran DELETE query on production instead of staging
 • Impact: About 500 user records affected
-• Recovery: Backup exists from last night - can restore in 2 hours
+• Recovery: Backup exists - can restore data within 2 hours
 • Prevention: Will add confirmation prompt and environment check to the script
 
-You're at your boss's office to confess.`,
+You need to confess to your boss and present a solution.`,
     userInitiates: true,
   },
   {
@@ -328,7 +330,7 @@ You're at your boss's office to confess.`,
     accentColor: "#4B5563",
     difficulty: "advanced",
     duration: "3-4 min",
-    systemPrompt: `Act as Rahul, a colleague at a consulting firm. You need your colleague to cover for you - tell boss you were in a client meeting.
+    systemPrompt: `Act as Rahul, a colleague at a tech startup. You need your colleague to cover for you - tell boss you were in a client meeting.
 
 Setting: Office. You initiate by asking the favor.
 
@@ -342,12 +344,14 @@ Constraints:
 1. Keep responses short (10-25 words)
 2. End with '<conv_completed/>' after your final response`,
     initialMessage: "Hey, quick favor - if boss asks, can you say I was in a client meeting earlier?",
-    situation: `You are a Software Engineer at a consulting firm. Your colleague Rahul approaches you with a request.
+    situation: `You are a Software Engineer at a tech startup. Your colleague Rahul approaches you with a request.
 
 The Situation:
 • Rahul's request: "If boss asks, can you say I was in a client meeting?"
 • The truth: Rahul was actually late / took a long break
-• Your position: You don't want to lie, but you also don't want to damage your relationship with Rahul`,
+• Your position: You don't want to lie, but you also don't want to damage your relationship with Rahul
+
+You need to refuse professionally without being preachy.`,
     userInitiates: false,
   },
   {
@@ -382,6 +386,160 @@ The Situation:
 You're going to your boss's office.`,
     userInitiates: true,
   },
+  {
+    id: "asking-raise",
+    title: "Asking for a Raise",
+    category: "Negotiation",
+    description: "Request a salary raise by presenting your value",
+    icon: "💰",
+    accentColor: "#10B981",
+    difficulty: "advanced",
+    duration: "4-5 min",
+    systemPrompt: `Act as a supportive but budget-conscious manager at a tech startup. Your employee initiated a raise conversation.
+
+Constraints:
+- Keep responses short (15-35 words)
+- Push for value-based justification (not personal need)
+- End your final message with '<conv_completed/>'`,
+    initialMessage: "",
+    situation: `You are a Software Engineer at a tech startup with 18 months of tenure. Your current CTC is ₹12 LPA and you want to request ₹15 LPA (25% raise).
+
+Your Value Points:
+• Improved checkout reliability, reducing payment failures
+• Took ownership of on-call and created runbooks, reducing incidents
+• Mentored a junior developer, improving PR turnaround time
+
+You're in a 1-on-1 with your manager to discuss compensation.`,
+    userInitiates: true,
+  },
+  {
+    id: "expensive-tool",
+    title: "Pitch Expensive Tool",
+    category: "Persuasion",
+    description: "Convince your manager to approve a $5,000/year tool",
+    icon: "🛠️",
+    accentColor: "#6366F1",
+    difficulty: "advanced",
+    duration: "4-5 min",
+    systemPrompt: `Act as a skeptical engineering manager at a tech startup. An engineer is pitching a $5,000 monitoring/alerting tool.
+
+Focus on ROI (MTTR, noise reduction, outage risk). Keep it short.
+End your final message with '<conv_completed/>'.`,
+    initialMessage: "",
+    situation: `You are a Software Engineer at a tech startup. You want to pitch a $5,000/year monitoring and alerting tool to your manager.
+
+Your ROI Points:
+• Reduce MTTR (Mean Time To Recovery)
+• Reduce on-call noise and alert fatigue
+• Minimize outage risk
+• You should have baseline measurements and success metrics ready
+
+You're meeting with your Engineering Manager to pitch the tool.`,
+    userInitiates: true,
+  },
+  {
+    id: "remote-work",
+    title: "Remote Work Request",
+    category: "Negotiation",
+    description: "Negotiate for more work-from-home days",
+    icon: "🏠",
+    accentColor: "#8B5CF6",
+    difficulty: "intermediate",
+    duration: "3-4 min",
+    systemPrompt: `Act as a manager at a tech startup. An employee requests 3 days WFH (Tue/Wed/Fri).
+
+Focus on output/commitments and team concerns (collaboration, availability, fairness).
+End final message with '<conv_completed/>'.`,
+    initialMessage: "",
+    situation: `You are a Software Engineer at a tech startup. Current policy allows 2 days WFH. You want to negotiate for 3 days WFH per week (Tuesday, Wednesday, Friday).
+
+Your Points:
+• Deep work improves output quality and speed
+• Commit to measurable deliverables and response times
+• Will come to office for demos, critical incidents, and planning days
+
+Manager's likely concerns: collaboration, availability for urgent work, fairness across team.
+
+You're in a 1-on-1 with your manager.`,
+    userInitiates: true,
+  },
+  {
+    id: "kpi-adjustment",
+    title: "KPI Adjustment",
+    category: "Negotiation",
+    description: "Negotiate a more realistic KPI target with data",
+    icon: "📈",
+    accentColor: "#EC4899",
+    difficulty: "advanced",
+    duration: "4-5 min",
+    systemPrompt: `Act as an engineering manager at a tech startup. Your employee is negotiating a KPI target down using quality/incident risk arguments.
+
+Constraints:
+- Keep responses short (15-30 words)
+- Push back on laziness; accept only data-backed proposals
+- End your final message with '<conv_completed/>'`,
+    initialMessage: "",
+    situation: `You are a Software Engineer at a tech startup. Your manager set an aggressive KPI target of 25 tickets closed per week. You believe a realistic target is 15 tickets per week.
+
+Your Data Points:
+• Higher target is causing shallow fixes and repeat bugs
+• Incident count has increased because quality is dropping
+• You need to negotiate with data, not sound lazy
+
+You're in a review meeting with your manager.`,
+    userInitiates: true,
+  },
+  {
+    id: "headcount-plea",
+    title: "Headcount Request",
+    category: "Resource Planning",
+    description: "Request additional team member during hiring freeze",
+    icon: "👥",
+    accentColor: "#14B8A6",
+    difficulty: "advanced",
+    duration: "4-5 min",
+    systemPrompt: `Act as a manager at a tech startup. Your engineer is asking for extra headcount during a hiring freeze.
+
+Constraints:
+- Keep responses short (15-30 words)
+- Push for business risk framing and alternative options
+- End your final message with '<conv_completed/>'`,
+    initialMessage: "",
+    situation: `You are a Software Engineer at a tech startup. Your team has only 3 engineers and you need 1 additional engineer. There's a hiring freeze, but exceptions require strong justification.
+
+Your Points:
+• Burnout risk on the on-call rotation
+• Delivery risk for committed roadmap plus increased incident risk
+• Alternative: Contractor/temp support OR formal scope reduction
+
+You're meeting with your boss to make the case.`,
+    userInitiates: true,
+  },
+  {
+    id: "overtime-comp",
+    title: "Overtime Comp-Off",
+    category: "Work-Life Balance",
+    description: "Request comp-off days after weekend work",
+    icon: "⚖️",
+    accentColor: "#F97316",
+    difficulty: "intermediate",
+    duration: "3-4 min",
+    systemPrompt: `Act as an engineering manager at a tech startup. Your engineer requests comp-off after weekend work.
+
+Constraints:
+- Keep responses short (15-30 words)
+- Ensure coverage/handoff is addressed
+- End your final message with '<conv_completed/>'`,
+    initialMessage: "",
+    situation: `You are a Software Engineer at a tech startup. You worked Saturday and Sunday for a production release. You want to request 2 comp-off days next week (Thursday and Friday).
+
+Your Requirements:
+• Propose a coverage plan for ongoing work and on-call
+• Give clear handoff so delivery doesn't slip
+
+You're in a post-release check-in with your manager.`,
+    userInitiates: true,
+  },
 ];
 
 export default function TrainerScreen() {
@@ -390,7 +548,7 @@ export default function TrainerScreen() {
   const handleScenarioPress = (scenario: Scenario) => {
     router.push({
       pathname: "/scenario/[id]",
-      params: {
+      params: { 
         id: scenario.id,
         title: scenario.title,
         systemPrompt: scenario.systemPrompt,
@@ -432,12 +590,12 @@ export default function TrainerScreen() {
         {SCENARIOS.map((scenario, index) => {
           const config = difficultyConfig(scenario.difficulty);
           return (
-            <TouchableOpacity
-              key={scenario.id}
-              style={styles.scenarioCard}
-              onPress={() => handleScenarioPress(scenario)}
+          <TouchableOpacity
+            key={scenario.id}
+            style={styles.scenarioCard}
+            onPress={() => handleScenarioPress(scenario)}
               activeOpacity={0.7}
-            >
+          >
               {/* Left accent bar */}
               <View style={[styles.accentBar, { backgroundColor: scenario.accentColor }]} />
 
@@ -447,15 +605,15 @@ export default function TrainerScreen() {
                 <View style={styles.cardTopRow}>
                   <View style={[styles.iconContainer, { backgroundColor: scenario.accentColor + "15" }]}>
                     <Text style={styles.icon}>{scenario.icon}</Text>
-                  </View>
+              </View>
                   <View style={styles.titleContainer}>
-                    <Text style={styles.cardTitle}>{scenario.title}</Text>
+                <Text style={styles.cardTitle}>{scenario.title}</Text>
                     <Text style={styles.cardCategory}>{scenario.category}</Text>
-                  </View>
+              </View>
                   <View style={styles.arrowContainer}>
                     <Text style={styles.arrow}>›</Text>
-                  </View>
-                </View>
+              </View>
+            </View>
 
                 {/* Description */}
                 <Text style={styles.cardDescription} numberOfLines={2}>
@@ -480,9 +638,9 @@ export default function TrainerScreen() {
                   <View style={[styles.badge, styles.initiatorBadge]}>
                     <Text style={styles.badgeText}>
                       {scenario.userInitiates ? "🎤 You start" : "🔊 They start"}
-                    </Text>
-                  </View>
-                </View>
+          </Text>
+        </View>
+      </View>
               </View>
             </TouchableOpacity>
           );
@@ -490,7 +648,7 @@ export default function TrainerScreen() {
 
         {/* Footer */}
         <View style={styles.footer}>
-          <Text style={styles.footerText}>More scenarios coming soon</Text>
+          <Text style={styles.footerText}>16 scenarios available • Practice daily!</Text>
         </View>
       </ScrollView>
     </SafeAreaView>

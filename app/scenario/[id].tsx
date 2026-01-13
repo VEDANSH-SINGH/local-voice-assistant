@@ -51,6 +51,255 @@ interface Feedback {
   feedback: string;
 }
 
+// Scenario-specific feedback prompts from scenario-readme.md
+// Each prompt is designed for the specific scenario context
+const FEEDBACK_PROMPTS: Record<string, { promptTemplate: string; roleLabels: { user: string; assistant: string } }> = {
+  "introduce-yourself": {
+    roleLabels: { user: "Employee", assistant: "Director" },
+    promptTemplate: `You are a communication coach giving direct feedback to someone who just introduced themselves to a Director.
+
+**Scenario:** You are a new employee from the engineering team at a tech startup. You spotted a Director in the breakroom and initiated a brief introduction. Goal was to share your name, role/team, and current work in ~30 seconds.
+
+**Your Conversation:**
+{conversation_text}
+
+Analyze and provide feedback directly to "you" in JSON format:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you': what you did well, what you need to work on, one actionable tip>"
+}`,
+  },
+  "leaving-early": {
+    roleLabels: { user: "Employee", assistant: "Boss" },
+    promptTemplate: `You are a communication coach giving direct feedback to someone who just requested to leave early from their boss.
+
+**Scenario:** You are a employee who walked into your boss's office to request leaving at 2 PM for a personal reason. Goal was to make the request confidently without over-apologizing or giving too much personal detail.
+
+**Your Conversation:**
+{conversation_text}
+
+Analyze and provide feedback directly to "you" in JSON format:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you': what you did well, what you need to work on, one actionable tip>"
+}`,
+  },
+  "status-update": {
+    roleLabels: { user: "Employee", assistant: "Boss" },
+    promptTemplate: `You are a communication coach giving direct feedback to someone who just gave a project status update.
+
+**Scenario:** You are a Developer working on the Customer Dashboard project. Your boss asked for a quick status update while walking to a meeting. You had ~45 seconds. The ideal format is "Headline → Detail → ETA".
+
+**Your Conversation:**
+{conversation_text}
+
+Analyze and provide feedback directly to "you" in JSON format:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you': what you did well, what you need to work on, one actionable tip>"
+}`,
+  },
+  "sick-call": {
+    roleLabels: { user: "Employee", assistant: "Boss" },
+    promptTemplate: `You are a communication coach giving direct feedback to someone who just called their boss about sick leave.
+
+**Scenario:** You are a Employee who woke up with a fever and called your boss to inform about absence. Goal was to STATE absence clearly (not ask permission) and mention who's covering urgent tasks.
+
+**Your Conversation:**
+{conversation_text}
+
+Analyze and provide feedback directly to "you" in JSON format:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you': what you did well, what you need to work on, one actionable tip>"
+}`,
+  },
+  "impossible-deadline": {
+    roleLabels: { user: "Employee", assistant: "Boss" },
+    promptTemplate: `You are a communication coach giving direct feedback to someone who discussed an unrealistic deadline with their boss.
+
+**Scenario:** You are a Software Engineer whose boss set a 2-day deadline for Payment Gateway Integration (realistically needs 5-6 days). You went to their office to discuss this.
+
+**Key facts you should have presented:**
+- 120 hours of work needed
+- 3 developers available
+- Math: 120 ÷ 3 = 40 hours each = 5 days minimum
+- Blockers: API docs pending, QA needs 1 day
+
+**Your Conversation:**
+{conversation_text}
+
+Analyze and provide feedback directly to "you" in JSON format:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you': what you did well, what you need to work on, one actionable tip>"
+}`,
+  },
+  "non-responder": {
+    roleLabels: { user: "You", assistant: "Priya (Colleague)" },
+    promptTemplate: `You are a communication coach giving direct feedback to someone who approached a colleague to get an answer.
+
+**Scenario:** You are a Software Engineer. Priya hasn't replied to your emails about API specs (needed for auth module). Deadline: tomorrow standup. You walked to her desk to get an answer.
+
+**Goal:** Be friendly but firm - get a specific commitment, not just "I'll do it later."
+
+**Your Conversation:**
+{conversation_text}
+
+Analyze and provide feedback directly to "you" in JSON format:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you': what you did well, what you need to work on, one actionable tip>"
+}`,
+  },
+  "scope-check": {
+    roleLabels: { user: "You", assistant: "Manager" },
+    promptTemplate: `You are a communication coach giving direct feedback to someone who was assigned a new task.
+
+**Scenario:** You are a Software Engineer. You were working on API migration (deadline: Thursday). Manager assigned you a new task (bug fix). Goal: clarify priorities, don't just say yes.
+
+**Your Conversation:**
+{conversation_text}
+
+Analyze and provide feedback directly to "you" in JSON format:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you': what you did well, what you need to work on, one actionable tip>"
+}`,
+  },
+  "messed-up": {
+    roleLabels: { user: "You", assistant: "Boss" },
+    promptTemplate: `You are a communication coach giving direct feedback to someone who confessed a work mistake.
+
+**Scenario:** You are a Software Engineer. You ran wrong query on production. You went to confess to your boss. Goal: direct ownership + solution.
+
+**Your Conversation:**
+{conversation_text}
+
+Analyze and provide feedback directly to "you" in JSON format:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you': what you did well, what you need to work on, one actionable tip>"
+}`,
+  },
+  "refuse-to-cover": {
+    roleLabels: { user: "You", assistant: "Rahul" },
+    promptTemplate: `You are a communication coach giving direct feedback to someone whose colleague asked them to lie.
+
+**Scenario:** You are a Software Engineer. Rahul asked you to tell boss he was in a client meeting (he wasn't). Goal: refuse professionally without being preachy or rude.
+
+**Your Conversation:**
+{conversation_text}
+
+Analyze and provide feedback directly to "you" in JSON format:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you': what you did well, what you need to work on, one actionable tip>"
+}`,
+  },
+  "over-promise": {
+    roleLabels: { user: "You", assistant: "Boss" },
+    promptTemplate: `You are a communication coach giving feedback to someone warning about a missed deadline.
+
+**Scenario:** You promised Tuesday delivery. It's Monday. You need until Thursday. 70% done.
+
+**Your Conversation:**
+{conversation_text}
+
+Provide feedback in JSON:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you'>"
+}`,
+  },
+  "asking-raise": {
+    roleLabels: { user: "You", assistant: "Manager" },
+    promptTemplate: `You are a communication coach.
+
+Scenario: You are a Software Engineer asking for a raise (₹12 LPA → ₹15 LPA). Evaluate clarity of ask and value justification.
+
+Conversation:
+{conversation_text}
+
+Return JSON with overall_score and feedback addressed to "you".
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you'>"
+}`,
+  },
+  "expensive-tool": {
+    roleLabels: { user: "You", assistant: "Manager" },
+    promptTemplate: `You are a communication coach.
+
+Scenario: You pitched an expensive monitoring tool. Evaluate ROI framing (MTTR, noise reduction, outage risk) and whether you gave a baseline + measurement plan.
+
+Conversation:
+{conversation_text}
+
+Return JSON addressed to "you" with overall_score and feedback.
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you'>"
+}`,
+  },
+  "remote-work": {
+    roleLabels: { user: "You", assistant: "Manager" },
+    promptTemplate: `You are a communication coach.
+
+Scenario: You are negotiating 3 days WFH. Evaluate whether you focused on productivity/output + commitments, not commuting dislike.
+
+Conversation:
+{conversation_text}
+
+Return JSON addressed to "you" with overall_score and feedback.
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you'>"
+}`,
+  },
+  "kpi-adjustment": {
+    roleLabels: { user: "You", assistant: "Manager" },
+    promptTemplate: `You are a communication coach giving direct feedback to someone who negotiated a KPI target.
+
+Scenario (fixed): KPI was 25 tickets/week, you proposed 15/week citing quality/repeat bugs and higher incidents.
+
+Conversation:
+{conversation_text}
+
+Return feedback as JSON:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you'>"
+}`,
+  },
+  "headcount-plea": {
+    roleLabels: { user: "You", assistant: "Boss" },
+    promptTemplate: `You are a communication coach giving direct feedback to someone requesting headcount during a hiring freeze.
+
+Conversation:
+{conversation_text}
+
+Return feedback as JSON:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you'>"
+}`,
+  },
+  "overtime-comp": {
+    roleLabels: { user: "You", assistant: "Manager" },
+    promptTemplate: `You are a communication coach giving direct feedback to someone asking for comp-off after weekend work.
+
+Conversation:
+{conversation_text}
+
+Return feedback as JSON:
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you'>"
+}`,
+  },
+};
+
 export default function ScenarioScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
@@ -108,15 +357,15 @@ export default function ScenarioScreen() {
   // Handle "I am ready" button press
   const handleStartConversation = async () => {
     setShowPrepScreen(false);
-    setIsInitializing(true);
-    try {
-      await initializeAll();
-    } catch (err) {
-      console.error("Initialization failed:", err);
-    } finally {
-      setIsInitializing(false);
-    }
-  };
+      setIsInitializing(true);
+      try {
+        await initializeAll();
+      } catch (err) {
+        console.error("Initialization failed:", err);
+      } finally {
+        setIsInitializing(false);
+      }
+    };
 
   // Play initial message when models are ready (only if AI initiates)
   useEffect(() => {
@@ -185,42 +434,66 @@ export default function ScenarioScreen() {
         ...conversationHistory,
       ];
 
-      // Format conversation for the prompt
+      // Get scenario-specific feedback config, fallback to generic if not found
+      const scenarioId = params.id || "";
+      const feedbackConfig = FEEDBACK_PROMPTS[scenarioId];
+      
+      // Use scenario-specific role labels or defaults
+      const userLabel = feedbackConfig?.roleLabels.user || "You";
+      const assistantLabel = feedbackConfig?.roleLabels.assistant || "Other Person";
+
+      // Format conversation for the prompt using scenario-specific role labels
       const conversationText = allMessages
         .map(msg => {
-          const role = msg.role === "user" ? "Employee" : "Manager";
+          const role = msg.role === "user" ? userLabel : assistantLabel;
           // Clean the content - remove <conv_completed/> tag
           const cleanContent = msg.content.replace(/<conv_completed\/?>/g, "").trim();
           return `${role}: ${cleanContent}`;
         })
         .join("\n\n");
 
-      const feedbackPrompt = `You are a communication coach analyzing a new employee's introduction conversation at a bank. The employee is a Data Analyst.
+      // Use scenario-specific prompt template or fallback to generic
+      let feedbackPrompt: string;
+      if (feedbackConfig?.promptTemplate) {
+        // Use the scenario-specific template with conversation injected
+        feedbackPrompt = feedbackConfig.promptTemplate.replace("{conversation_text}", conversationText);
+      } else {
+        // Fallback generic prompt
+        feedbackPrompt = `You are a communication coach giving direct feedback to someone who just completed a workplace conversation practice.
 
-Here is the conversation:
+**Scenario:** ${params.title || "Workplace Conversation"}
+${params.situation ? `**Context:** ${params.situation.split('\n')[0]}` : ""}
+
+**Goal:** Practice professional communication skills effectively.
+
+**Your Conversation:**
 
 ${conversationText}
 
-Analyze the employee's communication skills and provide feedback in the following JSON format only, no other text:
-{"overall_score": "X/10", "feedback": "Your detailed feedback here"}`;
+Analyze and provide feedback directly to "you" in JSON format:
 
-      console.log("📝 Generating feedback with prompt:", feedbackPrompt.substring(0, 200) + "...");
+{
+  "overall_score": "<score>/10",
+  "feedback": "<2-3 sentences addressing 'you': what you did well, what you need to work on, one actionable tip>"
+}`;
+      }
 
-      // Run completion
-      const result = await llama.llamaContext.completion({
-        prompt: feedbackPrompt,
-        n_predict: 300,
-        temperature: 0.7,
-        top_p: 0.9,
-        stop: ["\n\n", "```"],
-      });
+      console.log("📝 Generating feedback for scenario:", scenarioId);
+      console.log("📝 Using role labels:", userLabel, "/", assistantLabel);
+      console.log("📝 Prompt preview:", feedbackPrompt.substring(0, 200) + "...");
 
-      console.log("📊 Feedback result:", result.text);
+      // Use llama.completion() wrapper which applies Gemma chat template automatically
+      // (equivalent to Python's create_chat_completion)
+      const result = await llama.completion([
+        { role: "user", content: feedbackPrompt }
+      ]);
+
+      console.log("📊 Feedback result:", result);
 
       // Parse JSON from response
       try {
-        // Try to extract JSON from the response
-        const jsonMatch = result.text.match(/\{[\s\S]*?"overall_score"[\s\S]*?"feedback"[\s\S]*?\}/);
+        // Try to extract JSON from the response (result is now a string directly)
+        const jsonMatch = result.match(/\{[\s\S]*?"overall_score"[\s\S]*?"feedback"[\s\S]*?\}/);
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]) as Feedback;
           setFeedback(parsed);
@@ -229,14 +502,14 @@ Analyze the employee's communication skills and provide feedback in the followin
           // Fallback if JSON parsing fails
           setFeedback({
             overall_score: "7/10",
-            feedback: result.text.trim() || "Great effort! Keep practicing your introduction skills.",
+            feedback: result.trim() || "Great effort! Keep practicing your introduction skills.",
           });
         }
       } catch (parseError) {
         console.error("Failed to parse feedback JSON:", parseError);
         setFeedback({
           overall_score: "7/10",
-          feedback: result.text.trim() || "Good job! Continue practicing to improve your communication skills.",
+          feedback: result.trim() || "Good job! Continue practicing to improve your communication skills.",
         });
       }
     } catch (err) {

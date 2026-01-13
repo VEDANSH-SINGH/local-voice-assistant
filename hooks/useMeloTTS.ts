@@ -10,12 +10,12 @@
 import AudioModule from "expo-audio/build/AudioModule"
 import { Directory, File, Paths } from "expo-file-system"
 import {
-  EncodingType,
-  cacheDirectory,
-  createDownloadResumable,
-  writeAsStringAsync,
-  type DownloadProgressData,
-  type FileSystemDownloadResult,
+    EncodingType,
+    cacheDirectory,
+    createDownloadResumable,
+    writeAsStringAsync,
+    type DownloadProgressData,
+    type FileSystemDownloadResult,
 } from "expo-file-system/legacy"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Platform } from "react-native"
@@ -46,6 +46,119 @@ const getTimestamp = () => {
 
 // Timestamped log helper
 const tLog = (...args: any[]) => console.log(getTimestamp(), ...args)
+
+/**
+ * Number to Words Converter for TTS
+ * Converts numeric values to spelled-out words for better pronunciation
+ */
+const ONES = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+  'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen']
+const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety']
+const SCALES = ['', 'thousand', 'million', 'billion', 'trillion']
+
+const convertNumberToWords = (num: number): string => {
+  if (num === 0) return 'zero'
+  if (num < 0) return 'negative ' + convertNumberToWords(-num)
+
+  let words = ''
+  let scaleIndex = 0
+
+  while (num > 0) {
+    const chunk = num % 1000
+    if (chunk !== 0) {
+      const chunkWords = convertChunkToWords(chunk)
+      const scale = SCALES[scaleIndex]
+      words = chunkWords + (scale ? ' ' + scale : '') + (words ? ' ' + words : '')
+    }
+    num = Math.floor(num / 1000)
+    scaleIndex++
+  }
+
+  return words.trim()
+}
+
+const convertChunkToWords = (num: number): string => {
+  let words = ''
+
+  if (num >= 100) {
+    words += ONES[Math.floor(num / 100)] + ' hundred'
+    num %= 100
+    if (num > 0) words += ' '
+  }
+
+  if (num >= 20) {
+    words += TENS[Math.floor(num / 10)]
+    num %= 10
+    if (num > 0) words += ' ' + ONES[num]
+  } else if (num > 0) {
+    words += ONES[num]
+  }
+
+  return words
+}
+
+const convertDecimalToWords = (decimal: string): string => {
+  return decimal.split('').map(d => ONES[parseInt(d)] || 'zero').join(' ')
+}
+
+/**
+ * Preprocess text for TTS - converts numbers to words
+ */
+const preprocessTextForTTS = (text: string): string => {
+  // Handle percentages: "50%" -> "fifty percent"
+  text = text.replace(/(\d+(?:\.\d+)?)\s*%/g, (_, num) => {
+    const n = parseFloat(num)
+    if (num.includes('.')) {
+      const [int, dec] = num.split('.')
+      return convertNumberToWords(parseInt(int)) + ' point ' + convertDecimalToWords(dec) + ' percent'
+    }
+    return convertNumberToWords(n) + ' percent'
+  })
+
+  // Handle ordinals: "1st", "2nd", "3rd", "4th", etc.
+  text = text.replace(/(\d+)(st|nd|rd|th)\b/gi, (_, num) => {
+    const n = parseInt(num)
+    const ordinals: Record<number, string> = {
+      1: 'first', 2: 'second', 3: 'third', 4: 'fourth', 5: 'fifth',
+      6: 'sixth', 7: 'seventh', 8: 'eighth', 9: 'ninth', 10: 'tenth',
+      11: 'eleventh', 12: 'twelfth', 13: 'thirteenth', 20: 'twentieth',
+      30: 'thirtieth', 40: 'fortieth', 50: 'fiftieth'
+    }
+    if (ordinals[n]) return ordinals[n]
+    const words = convertNumberToWords(n)
+    if (words.endsWith('y')) return words.slice(0, -1) + 'ieth'
+    return words + 'th'
+  })
+
+  // Handle time: "10:30" -> "ten thirty"
+  text = text.replace(/(\d{1,2}):(\d{2})(?:\s*(am|pm|AM|PM))?/g, (_, hour, minute, ampm) => {
+    const h = parseInt(hour)
+    const m = parseInt(minute)
+    let result = convertNumberToWords(h)
+    if (m === 0) result += " o'clock"
+    else if (m < 10) result += ' oh ' + convertNumberToWords(m)
+    else result += ' ' + convertNumberToWords(m)
+    if (ampm) result += ' ' + ampm.toLowerCase()
+    return result
+  })
+
+  // Handle decimals: "3.14" -> "three point one four"
+  text = text.replace(/(\d+)\.(\d+)/g, (_, int, dec) => {
+    return convertNumberToWords(parseInt(int)) + ' point ' + convertDecimalToWords(dec)
+  })
+
+  // Handle comma-separated numbers: "1,000,000" -> "one million"
+  text = text.replace(/\b(\d{1,3}(?:,\d{3})+)\b/g, (_, num) => {
+    return convertNumberToWords(parseInt(num.replace(/,/g, '')))
+  })
+
+  // Handle standalone numbers: "42" -> "forty two"
+  text = text.replace(/\b(\d+)\b/g, (_, num) => {
+    return convertNumberToWords(parseInt(num))
+  })
+
+  return text
+}
 
 /**
  * TextChunker - Split text into chunks, trying to keep sentences intact.
@@ -1693,6 +1806,9 @@ export function useMeloTTS() {
         noiseScaleW = 0.8,
       } = options
 
+      // Preprocess text: convert numbers to words for better pronunciation
+      const processedText = preprocessTextForTTS(text)
+
       // Check if we're using a BERT model
       const isBertModel = config.requires_bert === true && bertSessionRef.current !== null
 
@@ -1706,7 +1822,7 @@ export function useMeloTTS() {
         tLog("Using BERT-enhanced synthesis pipeline")
         
         const { phones: rawPhones, tones: rawTones, word2ph, normalizedWords } = 
-          textToTokensWithWord2ph(text, tokens, lexicon, config)
+          textToTokensWithWord2ph(processedText, tokens, lexicon, config)
 
         if (rawPhones.length === 0) {
           throw new Error("No valid phonemes generated from text")
@@ -1751,7 +1867,7 @@ export function useMeloTTS() {
         tLog(`BERT feature extraction: ${bertTime}ms`)
       } else {
         // Standard (non-BERT) flow
-        const result = textToTokens(text, tokens, lexicon, config)
+        const result = textToTokens(processedText, tokens, lexicon, config)
         phones = result.phones
         tones = result.tones
         seqLen = phones.length
@@ -1761,7 +1877,7 @@ export function useMeloTTS() {
         }
       }
 
-      tLog(`Synthesizing: "${text}" -> ${seqLen} tokens${isBertModel ? " (BERT-enhanced)" : ""}`)
+      tLog(`Synthesizing: "${processedText}" -> ${seqLen} tokens${isBertModel ? " (BERT-enhanced)" : ""}`)
 
       // Create input tensors using onnxruntime-react-native Tensor
       const feeds: Record<string, any> = {
