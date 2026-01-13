@@ -102,9 +102,20 @@ const convertDecimalToWords = (decimal: string): string => {
 }
 
 /**
- * Preprocess text for TTS - converts numbers to words
+ * Preprocess text for TTS - converts numbers to words and normalizes punctuation
  */
 const preprocessTextForTTS = (text: string): string => {
+  // === ISSUE 3 FIX: Handle ellipsis and multiple dots ===
+  // Convert "..." or ".." to comma (natural pause) - must be done early before other processing
+  text = text.replace(/\.{2,}/g, ',')
+  
+  // Also handle spaced dots like ". . ." (which TextChunker might create)
+  text = text.replace(/(\.\s){2,}\./g, ',')
+  
+  // Clean up any resulting double commas or comma-period combinations
+  text = text.replace(/,\s*,/g, ',')
+  text = text.replace(/,\s*\./g, '.')
+
   // Handle percentages: "50%" -> "fifty percent"
   text = text.replace(/(\d+(?:\.\d+)?)\s*%/g, (_, num) => {
     const n = parseFloat(num)
@@ -130,7 +141,7 @@ const preprocessTextForTTS = (text: string): string => {
     return words + 'th'
   })
 
-  // Handle time: "10:30" -> "ten thirty"
+  // Handle time with colon: "10:30" -> "ten thirty", "10:30 pm" -> "ten thirty pm"
   text = text.replace(/(\d{1,2}):(\d{2})(?:\s*(am|pm|AM|PM))?/g, (_, hour, minute, ampm) => {
     const h = parseInt(hour)
     const m = parseInt(minute)
@@ -140,6 +151,14 @@ const preprocessTextForTTS = (text: string): string => {
     else result += ' ' + convertNumberToWords(m)
     if (ampm) result += ' ' + ampm.toLowerCase()
     return result
+  })
+
+  // === ISSUE 2 FIX: Handle time WITHOUT colon ===
+  // "3 pm" -> "three pm", "3pm" -> "three pm", "11 AM" -> "eleven am"
+  // Must be before standalone numbers handler
+  text = text.replace(/\b(\d{1,2})\s*(am|pm|AM|PM)\b/g, (_, hour, ampm) => {
+    const h = parseInt(hour)
+    return convertNumberToWords(h) + ' ' + ampm.toLowerCase()
   })
 
   // Handle decimals: "3.14" -> "three point one four"

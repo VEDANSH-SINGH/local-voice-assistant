@@ -418,6 +418,8 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     let cleaned = text.replace(/<[^>]+\/?>/g, "")
     // Remove non-ASCII characters (keeps English, numbers, punctuation)
     cleaned = cleaned.replace(/[^\x00-\x7F]/g, " ")
+    // Handle ellipsis: convert "..." or ".." to comma (natural pause)
+    cleaned = cleaned.replace(/\.{2,}/g, ",")
     // Remove extra whitespace
     cleaned = cleaned.replace(/\s+/g, " ").trim()
     // Remove any remaining control characters
@@ -845,8 +847,11 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       // Queue new sentences for TTS
       for (const sentence of sentences) {
         if (!processedSentencesRef.current.has(sentence)) {
+          tLog(`✅ Extracted & queuing sentence: "${sentence.substring(0, 50)}${sentence.length > 50 ? '...' : ''}"`)
           processedSentencesRef.current.add(sentence)
           queueSentenceForTTS(sentence)
+        } else {
+          tLog(`⚠️ Skipping duplicate sentence during streaming: "${sentence.substring(0, 50)}..."`)
         }
       }
 
@@ -862,10 +867,15 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     const remainingText = accumulatedTextRef.current.trim()
     tLog(`🏁 LLM Complete - Remaining text (${remainingText.length} chars): "${remainingText}"`)
     
-    if (
-      remainingText.length > 0 &&
-      !processedSentencesRef.current.has(remainingText)
-    ) {
+    if (remainingText.length > 0) {
+      // Check if already processed (for logging purposes)
+      const alreadyProcessed = processedSentencesRef.current.has(remainingText)
+      if (alreadyProcessed) {
+        tLog(`⚠️ Remainder was already in processedSentences - queueing anyway to avoid skipping`)
+        tLog(`   Processed sentences: ${Array.from(processedSentencesRef.current).map(s => `"${s.substring(0, 30)}..."`).join(", ")}`)
+      }
+      // Always queue remainder text - don't skip even if it appears to be duplicate
+      // The remainder is the final piece and should never be skipped
       processedSentencesRef.current.add(remainingText)
       queueSentenceForTTS(remainingText)
     }
