@@ -347,7 +347,7 @@ export default function ScenarioScreen() {
     systemPrompt: params.systemPrompt || "You are a helpful assistant.",
     ttsModelSource: "bert" as ModelSource, // BERT for best prosody in training scenarios
     llamaModel: "gemma-2b-it", // Gemma 2B IT - better quality for scenarios
-    whisperModel: "tiny", // Use tiny model for faster transcription
+    whisperModel: "base", // Use base model for better transcription accuracy (same as Whisper demo tab)
   });
 
   const scrollViewRef = useRef<ScrollView>(null);

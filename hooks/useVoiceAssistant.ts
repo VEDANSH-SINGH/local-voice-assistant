@@ -909,7 +909,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       const { stop, subscribe } =
         await whisper.whisperContext.transcribeRealtime({
           language: "en",
-          realtimeAudioSec: 60,
+          realtimeAudioSec: 300,  // 5 minutes session (matches Whisper demo tab)
           realtimeAudioSliceSec: 10,  // Increased from 5 to 10 for better transcription quality (more context per chunk)
           realtimeAudioMinSec: 1,
           audioSessionOnStartIos: {
