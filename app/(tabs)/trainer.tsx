@@ -134,7 +134,7 @@ Your behavior:
 Constraints:
 1. Keep responses short (10-20 words)
 2. End with '<conv_completed/>' after your final STATEMENT (not a question)`,
-    initialMessage: "Where are we on the Dashboard?",
+    initialMessage: "How much of the Dashboard is done?",
     situation: `You are a Software Engineer working on the Customer Dashboard Revamp project at a tech company. Your boss spots you in the corridor while rushing to a meeting.
 
 Project Status:
