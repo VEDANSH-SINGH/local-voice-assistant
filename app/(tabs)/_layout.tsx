@@ -15,6 +15,7 @@ const COLORS = {
 export default function TabLayout() {
   return (
     <Tabs
+      initialRouteName="trainer"
       screenOptions={{
         tabBarActiveTintColor: COLORS.accent,
         tabBarInactiveTintColor: COLORS.textMuted,

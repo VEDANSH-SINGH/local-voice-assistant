@@ -265,6 +265,11 @@ export default function VoiceAssistantScreen() {
         )}
       </View>
 
+      {/* Restart App Notice */}
+      <View style={styles.restartNotice}>
+        <Text style={styles.restartNoticeText}>Please restart app after changing the tabs</Text>
+      </View>
+
       {/* Model Status Cards */}
       {!ready && (
         <View style={styles.statusCards}>
@@ -880,6 +885,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
     marginLeft: 12,
+  },
+  restartNotice: {
+    backgroundColor: "#F1F5F9",
+    paddingVertical: 6,
+    alignItems: "center",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+  },
+  restartNoticeText: {
+    color: "#475569",
+    fontSize: 12,
+    fontWeight: "600",
   },
   conversationContainer: {
     flex: 1,

@@ -1,20 +1,20 @@
-import React, { useState, useEffect, useRef } from "react";
+import { ChatMessage, useLlamaModels } from "@/hooks/useLlamaModels";
 import { StatusBar } from "expo-status-bar";
+import React, { useEffect, useRef, useState } from "react";
 import {
-  StyleSheet,
-  Text,
-  View,
-  TouchableOpacity,
-  ScrollView,
-  TextInput,
-  KeyboardAvoidingView,
-  Platform,
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useLlamaModels, ChatMessage, LLAMA_MODELS } from "@/hooks/useLlamaModels";
 
 const ACCENT_COLOR = "#10B981"; // Emerald green for chat
 
@@ -198,7 +198,7 @@ export default function ChatScreen() {
     ? "Error"
     : "Not initialized";
 
-  const isReady = llamaContext && !isInitializingModel && !isDownloading;
+  const isReady = !!llamaContext && !isInitializingModel && !isDownloading;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -240,12 +240,17 @@ export default function ChatScreen() {
             )}
           </View>
         </View>
+        
+        {/* Restart App Notice */}
+        <View style={styles.restartNotice}>
+          <Text style={styles.restartNoticeText}>Please restart app after changing the tabs</Text>
+        </View>
 
         {/* Error Banner */}
         {error ? (
           <View style={styles.errorBanner}>
             <Text style={styles.errorText}>{error}</Text>
-            <TouchableOpacity onPress={initializeModel}>
+            <TouchableOpacity onPress={() => initializeModel()}>
               <Text style={styles.retryText}>Retry</Text>
             </TouchableOpacity>
           </View>
@@ -648,6 +653,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
     marginLeft: 12,
+  },
+  restartNotice: {
+    backgroundColor: "#EFF6FF",
+    paddingVertical: 6,
+    alignItems: "center",
+    borderBottomWidth: 1,
+    borderBottomColor: "#DBEAFE",
+  },
+  restartNoticeText: {
+    color: "#1D4ED8",
+    fontSize: 12,
+    fontWeight: "600",
   },
   progressContainer: {
     paddingHorizontal: 20,
