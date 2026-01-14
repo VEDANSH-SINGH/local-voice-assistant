@@ -1245,21 +1245,14 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     ]
   )
 
-  // Cleanup on unmount - release all contexts to free GPU/memory resources
-  // Use the hooks' release methods to properly reset their internal state
+  // Cleanup on unmount - just cancel any ongoing operations
+  // Note: We don't release contexts here to allow reuse across screen navigations
+  // Contexts are managed by VoiceAssistantProvider at the app level
   useEffect(() => {
     return () => {
       cancel()
-      // Release whisper context using the hook's method (properly resets state)
-      whisper.resetWhisperContext().catch((e: any) => 
-        console.warn("Failed to release whisper context on unmount:", e)
-      )
-      // Release llama context using the hook's method (properly resets state)
-      llama.releaseContext().catch((e: any) =>
-        console.warn("Failed to release llama context on unmount:", e)
-      )
     }
-  }, [whisper.resetWhisperContext, llama.releaseContext])
+  }, [cancel])
 
   return {
     // State

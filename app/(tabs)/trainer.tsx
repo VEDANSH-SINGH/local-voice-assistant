@@ -1,6 +1,4 @@
-import { useLlamaModels } from "@/hooks/useLlamaModels";
-import { useMeloTTS } from "@/hooks/useMeloTTS";
-import { useWhisperModels } from "@/hooks/useWhisperModels";
+import { useVoiceAssistantContext } from "@/hooks/VoiceAssistantContext";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import React, { useEffect, useRef, useState } from "react";
@@ -549,10 +547,8 @@ You're in a post-release check-in with your manager.`,
 export default function TrainerScreen() {
   const router = useRouter();
   
-  // Model hooks for status tracking
-  const whisper = useWhisperModels();
-  const llama = useLlamaModels();
-  const tts = useMeloTTS();
+  // Use shared voice assistant context (models initialized once, shared across scenarios)
+  const { whisper, llama, tts, isInitializing } = useVoiceAssistantContext();
 
   // Track download progress state for display
   const [downloadStatus, setDownloadStatus] = useState<{
@@ -644,7 +640,8 @@ export default function TrainerScreen() {
   const ttsDownloaded = ttsBertDownloaded || ttsDefaultDownloaded;
 
   // Check if any model is initializing (not downloading)
-  const isInitializing = 
+  const isModelInitializing = 
+    isInitializing ||
     (whisper.isInitializingModel && !whisper.isDownloading) ||
     (llama.isInitializingModel && !llama.isDownloading) ||
     (tts.isInitializingModel && !tts.isDownloading);
@@ -687,7 +684,7 @@ export default function TrainerScreen() {
     if (downloadStatus) {
       return `Downloading ${downloadStatus.modelName}...`;
     }
-    if (isInitializing) {
+    if (isModelInitializing) {
       return "Initializing models...";
     }
     if (allModelsReady) {
@@ -705,7 +702,7 @@ export default function TrainerScreen() {
 
   // Get status color
   const getStatusColor = () => {
-    if (downloadStatus || isInitializing || isPredownloading) return COLORS.warning;
+    if (downloadStatus || isModelInitializing || isPredownloading) return COLORS.warning;
     if (allModelsReady) return COLORS.success;
     const downloadedCount = [whisperDownloaded, llamaDownloaded, ttsDownloaded].filter(Boolean).length;
     if (downloadedCount === 3) return COLORS.success;
@@ -759,14 +756,14 @@ export default function TrainerScreen() {
           activeOpacity={0.7}
         >
           <View style={styles.statusHeader}>
-            {(downloadStatus || isInitializing || isPredownloading) && (
+            {(downloadStatus || isModelInitializing || isPredownloading) && (
               <ActivityIndicator 
                 size="small" 
                 color={getStatusColor()} 
                 style={styles.statusSpinner}
               />
             )}
-            {!downloadStatus && !isInitializing && !isPredownloading && (
+            {!downloadStatus && !isModelInitializing && !isPredownloading && (
               <View style={[styles.statusDot, { backgroundColor: getStatusColor() }]} />
             )}
             <Text style={[styles.statusText, { color: getStatusColor() }]}>
