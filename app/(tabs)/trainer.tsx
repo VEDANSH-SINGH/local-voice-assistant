@@ -134,7 +134,7 @@ Your behavior:
 Constraints:
 1. Keep responses short (10-20 words)
 2. End with '<conv_completed/>' after your final STATEMENT (not a question)`,
-    initialMessage: "Hey! Quick - how's the Customer Dashboard coming along?",
+    initialMessage: "Where are we on the Dashboard?",
     situation: `You are a Software Engineer working on the Customer Dashboard Revamp project at a tech company. Your boss spots you in the corridor while rushing to a meeting.
 
 Project Status:
@@ -275,7 +275,7 @@ Your behavior:
 Constraints:
 1. Keep responses short (15-30 words)
 2. End with '<conv_completed/>' after your final message`,
-    initialMessage: "Hey, I need you to pick up a bug fix in the reporting module. Some users are affected.",
+    initialMessage: "There's a bug in the reporting module. Some users are affected.",
     situation: `You are a Software Engineer at a tech startup. Your manager just walked up to assign you a new task.
 
 Your Current Work:
@@ -345,7 +345,7 @@ Your behavior:
 Constraints:
 1. Keep responses short (10-25 words)
 2. End with '<conv_completed/>' after your final response`,
-    initialMessage: "Hey, quick favor - if boss asks, can you say I was in a client meeting earlier?",
+    initialMessage: "Hey, I need a quick favor. If boss asks, can you say I was in a client meeting earlier?",
     situation: `You are a Software Engineer at a tech startup. Your colleague Rahul approaches you with a request.
 
 The Situation:

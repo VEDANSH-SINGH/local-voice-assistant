@@ -1,10 +1,10 @@
 import { useVoiceAssistantContext, type PipelineState } from "@/hooks/VoiceAssistantContext";
 import { type ChatMessage } from "@/hooks/useLlamaModels";
-import AudioModule from "expo-audio/build/AudioModule";
 import {
   getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
 } from "expo-audio";
+import AudioModule from "expo-audio/build/AudioModule";
 import { File } from "expo-file-system";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
