@@ -14,9 +14,12 @@ import {
     cacheDirectory,
     createDownloadResumable,
     writeAsStringAsync,
+    type DownloadPauseState,
     type DownloadProgressData,
+    type DownloadResumable,
     type FileSystemDownloadResult,
 } from "expo-file-system/legacy"
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Platform } from "react-native"
 import { unzip } from "react-native-zip-archive"
@@ -467,6 +470,9 @@ const LETTER_TO_PHONE: Record<string, string[]> = {
 // Model source types
 export type ModelSource = "default" | "custom" | "bert"
 
+// Keep awake tag for downloads
+const TTS_KEEP_AWAKE_TAG = "tts-model-download"
+
 export function useMeloTTS() {
   const [modelFiles, setModelFiles] = useState<Record<string, ModelFileInfo>>(
     {}
@@ -500,6 +506,14 @@ export function useMeloTTS() {
     custom: false,
     bert: false,
   })
+
+  // Background download state
+  const [isDownloadPaused, setIsDownloadPaused] = useState(false)
+
+  // Download resumable reference for pause/resume support
+  const downloadResumableRef = useRef<DownloadResumable | null>(null)
+  const downloadPauseStateRef = useRef<DownloadPauseState | null>(null)
+  const currentDownloadSourceRef = useRef<ModelSource | null>(null)
 
   // Model resources
   const sessionRef = useRef<any>(null) // InferenceSession from onnxruntime-react-native
@@ -548,6 +562,7 @@ export function useMeloTTS() {
   const getModelDirectory = useCallback(async () => {
     return getModelDirectoryForSource(currentModelSource)
   }, [currentModelSource, getModelDirectoryForSource])
+
 
   // Check if a model source has been downloaded
   const checkSourceDownloaded = useCallback(
@@ -693,6 +708,17 @@ export function useMeloTTS() {
       try {
         setIsDownloading(true)
         setDownloadProgress({ models: 0 })
+        setIsDownloadPaused(false)
+        currentDownloadSourceRef.current = source
+
+        // Activate keep-awake to prevent screen sleep during download
+        try {
+          await activateKeepAwakeAsync(TTS_KEEP_AWAKE_TAG)
+          tLog("[MeloTTS] Keep-awake activated for download")
+        } catch (error) {
+          console.warn("[MeloTTS] Failed to activate keep-awake:", error)
+        }
+
         const modelUrl =
           source === "bert"
             ? MELO_TTS_BERT_MODEL_URL
@@ -754,17 +780,36 @@ export function useMeloTTS() {
         lastTimeRef.current = Date.now()
         setDownloadSpeed("")
 
+        // Expected sizes for TTS model zips (approximate)
+        const EXPECTED_ZIP_SIZES: Record<ModelSource, number> = {
+          default: 300 * 1024 * 1024, // ~300MB
+          custom: 200 * 1024 * 1024,  // ~200MB
+          bert: 500 * 1024 * 1024,    // ~500MB (includes BERT model)
+        };
+
+        // Create resumable download with background session support
+        // expo-file-system uses BACKGROUND session type by default, which:
+        // - iOS: Uses NSURLSession background configuration - downloads continue when app is backgrounded or device locked
+        // - Android: Downloads continue in background as long as process isn't killed by the system
         const downloadResumable = createDownloadResumable(
           modelUrl,
           zipPath,
-          {},
+          {
+            // sessionType defaults to FileSystemSessionType.BACKGROUND (0)
+            // This allows downloads to continue in background and when device is locked
+          },
           (progressData: DownloadProgressData) => {
             const { totalBytesWritten, totalBytesExpectedToWrite } =
               progressData
-            const fraction =
-              totalBytesExpectedToWrite > 0
-                ? totalBytesWritten / totalBytesExpectedToWrite
-                : 0
+            // Calculate progress - if server doesn't send Content-Length, use expected size
+            let fraction = 0
+            if (totalBytesExpectedToWrite > 0) {
+              fraction = totalBytesWritten / totalBytesExpectedToWrite
+            } else {
+              // Fallback to expected size if Content-Length not provided
+              const expectedSize = EXPECTED_ZIP_SIZES[source] || 300 * 1024 * 1024
+              fraction = Math.min(1, totalBytesWritten / expectedSize)
+            }
             setDownloadProgress({ models: fraction * 0.8 }) // 80% for download
 
             // Calculate speed
@@ -790,13 +835,22 @@ export function useMeloTTS() {
               lastTimeRef.current = now
             }
 
-            console.log(`Download progress: ${(fraction * 100).toFixed(1)}%`)
+            console.log(`[MeloTTS] Download progress: ${(fraction * 100).toFixed(1)}% (${(totalBytesWritten / 1024 / 1024).toFixed(1)}MB)`)
           }
         )
+
+        tLog("[MeloTTS] Download started with BACKGROUND session type - will continue in background/locked")
+
+        // Store reference for pause/resume
+        downloadResumableRef.current = downloadResumable
 
         const downloadResult = (await downloadResumable.downloadAsync()) as
           | FileSystemDownloadResult
           | undefined
+
+        // Clear the reference after download completes
+        downloadResumableRef.current = null
+        downloadPauseStateRef.current = null
 
         if (
           !downloadResult ||
@@ -1089,10 +1143,58 @@ export function useMeloTTS() {
         return false
       } finally {
         setIsDownloading(false)
+        setIsDownloadPaused(false)
+        downloadResumableRef.current = null
+        currentDownloadSourceRef.current = null
+
+        // Deactivate keep-awake
+        try {
+          deactivateKeepAwake(TTS_KEEP_AWAKE_TAG)
+          tLog("[MeloTTS] Keep-awake deactivated")
+        } catch (error) {
+          console.warn("[MeloTTS] Failed to deactivate keep-awake:", error)
+        }
       }
     },
     [getModelDirectoryForSource, refreshModelFiles, refreshDownloadedSources]
   )
+
+  // Manually pause the current download
+  const pauseDownload = useCallback(async (): Promise<boolean> => {
+    if (!downloadResumableRef.current || !isDownloading) {
+      console.warn("[MeloTTS] No active download to pause")
+      return false
+    }
+
+    try {
+      const pauseState = await downloadResumableRef.current.pauseAsync()
+      downloadPauseStateRef.current = pauseState
+      setIsDownloadPaused(true)
+      tLog("[MeloTTS] Download paused manually")
+      return true
+    } catch (error) {
+      console.error("[MeloTTS] Failed to pause download:", error)
+      return false
+    }
+  }, [isDownloading])
+
+  // Resume a paused download
+  const resumeDownload = useCallback(async (): Promise<boolean> => {
+    if (!downloadResumableRef.current || !isDownloadPaused) {
+      console.warn("[MeloTTS] No paused download to resume")
+      return false
+    }
+
+    try {
+      await downloadResumableRef.current.resumeAsync()
+      setIsDownloadPaused(false)
+      tLog("[MeloTTS] Download resumed")
+      return true
+    } catch (error) {
+      console.error("[MeloTTS] Failed to resume download:", error)
+      return false
+    }
+  }, [isDownloadPaused])
 
   // Switch to a different model source (if already downloaded)
   const switchModelSource = useCallback(
@@ -2447,6 +2549,17 @@ export function useMeloTTS() {
     }
   }, [stopAudio])
 
+  // Cleanup keep-awake on unmount
+  useEffect(() => {
+    return () => {
+      try {
+        deactivateKeepAwake(TTS_KEEP_AWAKE_TAG)
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  }, [])
+
   return {
     // State
     modelFiles,
@@ -2462,6 +2575,7 @@ export function useMeloTTS() {
     onnxError,
     currentModelSource,
     downloadedSources,
+    isDownloadPaused,
 
     // Actions
     downloadAndExtractModels,
@@ -2478,6 +2592,8 @@ export function useMeloTTS() {
     stopAudio,
     checkOnnxAvailability,
     refreshDownloadedSources,
+    pauseDownload,
+    resumeDownload,
 
     // Helpers
     getModelById,

@@ -1,7 +1,11 @@
+import { useLlamaModels } from "@/hooks/useLlamaModels";
+import { useMeloTTS } from "@/hooks/useMeloTTS";
+import { useWhisperModels } from "@/hooks/useWhisperModels";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
@@ -544,6 +548,172 @@ You're in a post-release check-in with your manager.`,
 
 export default function TrainerScreen() {
   const router = useRouter();
+  
+  // Model hooks for status tracking
+  const whisper = useWhisperModels();
+  const llama = useLlamaModels();
+  const tts = useMeloTTS();
+
+  // Track download progress state for display
+  const [downloadStatus, setDownloadStatus] = useState<{
+    type: "whisper" | "llama" | "tts" | null;
+    progress: number;
+    modelName: string;
+  } | null>(null);
+
+  // Monitor download progress from all hooks
+  useEffect(() => {
+    // Check Whisper download
+    if (whisper.isDownloading) {
+      const progress = Object.values(whisper.downloadProgress)[0] || 0;
+      const modelId = Object.keys(whisper.downloadProgress)[0];
+      const model = whisper.getModelById(modelId || "");
+      setDownloadStatus({
+        type: "whisper",
+        progress,
+        modelName: model?.label || "Speech Recognition",
+      });
+      return;
+    }
+
+    // Check LLM download
+    if (llama.isDownloading) {
+      const progress = Object.values(llama.downloadProgress)[0] || 0;
+      const modelId = Object.keys(llama.downloadProgress)[0];
+      const model = llama.getModelById(modelId || "");
+      setDownloadStatus({
+        type: "llama",
+        progress,
+        modelName: model?.label || "AI Model",
+      });
+      return;
+    }
+
+    // Check TTS download
+    if (tts.isDownloading) {
+      const progress = tts.downloadProgress.models || 0;
+      setDownloadStatus({
+        type: "tts",
+        progress,
+        modelName: `TTS (${tts.currentModelSource})`,
+      });
+      return;
+    }
+
+    // No active download
+    setDownloadStatus(null);
+  }, [
+    whisper.isDownloading,
+    whisper.downloadProgress,
+    llama.isDownloading,
+    llama.downloadProgress,
+    tts.isDownloading,
+    tts.downloadProgress,
+    tts.currentModelSource,
+  ]);
+
+  // Check model readiness
+  const isWhisperReady = whisper.whisperContext !== null;
+  const isLlamaReady = llama.llamaContext !== null;
+  const isTTSReady = tts.isReady();
+  const allModelsReady = isWhisperReady && isLlamaReady && isTTSReady;
+
+  // Check if models are downloaded (file exists) but not initialized
+  const [whisperDownloaded, setWhisperDownloaded] = useState(false);
+  const [llamaDownloaded, setLlamaDownloaded] = useState(false);
+  const [ttsDownloaded, setTtsDownloaded] = useState(false);
+
+  // Check downloaded status on mount
+  useEffect(() => {
+    const checkDownloaded = async () => {
+      // Check whisper
+      const hasWhisper = Object.keys(whisper.modelFiles).length > 0 || 
+        whisper.isModelDownloaded("base") || whisper.isModelDownloaded("tiny");
+      setWhisperDownloaded(hasWhisper);
+      
+      // Check llama
+      const hasLlama = Object.keys(llama.modelFiles).length > 0;
+      setLlamaDownloaded(hasLlama);
+      
+      // Check TTS
+      const hasTts = tts.downloadedSources.bert || tts.downloadedSources.default;
+      setTtsDownloaded(hasTts);
+    };
+    checkDownloaded();
+  }, [whisper.modelFiles, llama.modelFiles, tts.downloadedSources]);
+
+  // Check if any model is initializing (not downloading)
+  const isInitializing = 
+    (whisper.isInitializingModel && !whisper.isDownloading) ||
+    (llama.isInitializingModel && !llama.isDownloading) ||
+    (tts.isInitializingModel && !tts.isDownloading);
+
+  // Pre-download models state
+  const [isPredownloading, setIsPredownloading] = useState(false);
+
+  // Pre-download all models
+  const handlePredownloadModels = async () => {
+    if (isPredownloading || downloadStatus) return;
+    
+    setIsPredownloading(true);
+    try {
+      // Download TTS first (smallest, fastest)
+      if (!ttsDownloaded) {
+        await tts.downloadAndExtractModels("bert");
+      }
+      
+      // Download Whisper
+      if (!whisperDownloaded) {
+        const whisperModel = whisper.getModelById("base");
+        if (whisperModel) {
+          await whisper.downloadModel(whisperModel);
+        }
+      }
+      
+      // Download LLM (largest, slowest)
+      if (!llamaDownloaded) {
+        await llama.downloadModel("gemma-2b-it");
+      }
+    } catch (error) {
+      console.error("Pre-download failed:", error);
+    } finally {
+      setIsPredownloading(false);
+    }
+  };
+
+  // Get status text
+  const getStatusText = () => {
+    if (downloadStatus) {
+      return `Downloading ${downloadStatus.modelName}...`;
+    }
+    if (isInitializing) {
+      return "Initializing models...";
+    }
+    if (allModelsReady) {
+      return "All models ready";
+    }
+    const downloadedCount = [whisperDownloaded, llamaDownloaded, ttsDownloaded].filter(Boolean).length;
+    if (downloadedCount === 3) {
+      return "All models downloaded";
+    }
+    if (downloadedCount > 0) {
+      return `${downloadedCount}/3 models downloaded`;
+    }
+    return "Tap to download models";
+  };
+
+  // Get status color
+  const getStatusColor = () => {
+    if (downloadStatus || isInitializing || isPredownloading) return COLORS.warning;
+    if (allModelsReady) return COLORS.success;
+    const downloadedCount = [whisperDownloaded, llamaDownloaded, ttsDownloaded].filter(Boolean).length;
+    if (downloadedCount === 3) return COLORS.success;
+    if (downloadedCount > 0) return COLORS.warning;
+    return COLORS.textMuted;
+  };
+
+  // Check if all models are downloaded
+  const allModelsDownloaded = whisperDownloaded && llamaDownloaded && ttsDownloaded;
 
   const handleScenarioPress = (scenario: Scenario) => {
     router.push({
@@ -579,6 +749,78 @@ export default function TrainerScreen() {
         <Text style={styles.subtitle}>
           Build confidence with real workplace conversations
         </Text>
+
+        {/* Model Status Card */}
+        <TouchableOpacity 
+          style={styles.statusCard}
+          onPress={handlePredownloadModels}
+          disabled={allModelsDownloaded || downloadStatus !== null || isPredownloading}
+          activeOpacity={0.7}
+        >
+          <View style={styles.statusHeader}>
+            {(downloadStatus || isInitializing || isPredownloading) && (
+              <ActivityIndicator 
+                size="small" 
+                color={getStatusColor()} 
+                style={styles.statusSpinner}
+              />
+            )}
+            {!downloadStatus && !isInitializing && !isPredownloading && (
+              <View style={[styles.statusDot, { backgroundColor: getStatusColor() }]} />
+            )}
+            <Text style={[styles.statusText, { color: getStatusColor() }]}>
+              {getStatusText()}
+            </Text>
+            {!allModelsDownloaded && !downloadStatus && !isPredownloading && (
+              <Text style={styles.downloadHint}>↓</Text>
+            )}
+          </View>
+
+          {/* Download Progress Bar */}
+          {downloadStatus && (
+            <View style={styles.progressContainer}>
+              <View style={styles.progressBarBg}>
+                <View 
+                  style={[
+                    styles.progressBarFill, 
+                    { width: `${Math.round(downloadStatus.progress * 100)}%` }
+                  ]} 
+                />
+              </View>
+              <Text style={styles.progressText}>
+                {Math.round(downloadStatus.progress * 100)}%
+                {tts.isDownloading && tts.downloadSpeed ? ` · ${tts.downloadSpeed}` : ""}
+              </Text>
+            </View>
+          )}
+
+          {/* Model Status Indicators (when not downloading) */}
+          {!downloadStatus && (
+            <View style={styles.modelStatusRow}>
+              <View style={styles.modelStatusItem}>
+                <View style={[
+                  styles.modelDot, 
+                  { backgroundColor: whisperDownloaded || isWhisperReady ? COLORS.success : COLORS.textLight }
+                ]} />
+                <Text style={styles.modelLabel}>Speech</Text>
+              </View>
+              <View style={styles.modelStatusItem}>
+                <View style={[
+                  styles.modelDot, 
+                  { backgroundColor: llamaDownloaded || isLlamaReady ? COLORS.success : COLORS.textLight }
+                ]} />
+                <Text style={styles.modelLabel}>AI</Text>
+              </View>
+              <View style={styles.modelStatusItem}>
+                <View style={[
+                  styles.modelDot, 
+                  { backgroundColor: ttsDownloaded || isTTSReady ? COLORS.success : COLORS.textLight }
+                ]} />
+                <Text style={styles.modelLabel}>Voice</Text>
+              </View>
+            </View>
+          )}
+        </TouchableOpacity>
       </View>
 
       {/* Scenarios List */}
@@ -704,6 +946,78 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: COLORS.textMuted,
     lineHeight: 22,
+  },
+  statusCard: {
+    marginTop: 16,
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  statusHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  statusSpinner: {
+    marginRight: 8,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  statusText: {
+    fontSize: 14,
+    fontWeight: "600",
+    flex: 1,
+  },
+  downloadHint: {
+    fontSize: 16,
+    color: COLORS.accent,
+    fontWeight: "600",
+    marginLeft: 8,
+  },
+  progressContainer: {
+    marginTop: 10,
+  },
+  progressBarBg: {
+    height: 6,
+    backgroundColor: COLORS.border,
+    borderRadius: 3,
+    overflow: "hidden",
+  },
+  progressBarFill: {
+    height: "100%",
+    backgroundColor: COLORS.accent,
+    borderRadius: 3,
+  },
+  progressText: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: 6,
+    textAlign: "right",
+  },
+  modelStatusRow: {
+    flexDirection: "row",
+    marginTop: 10,
+    gap: 16,
+  },
+  modelStatusItem: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  modelDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginRight: 6,
+  },
+  modelLabel: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    fontWeight: "500",
   },
   scenariosContainer: {
     flex: 1,

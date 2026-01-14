@@ -3,15 +3,18 @@
  *
  * Download from https://huggingface.co/ggerganov/whisper.cpp/tree/main
  */
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Directory, File, Paths } from "expo-file-system";
 import {
   createDownloadResumable,
+  type DownloadPauseState,
   type DownloadProgressData,
+  type DownloadResumable,
   type FileSystemDownloadResult,
 } from "expo-file-system/legacy";
 import { initWhisper, initWhisperVad } from "whisper.rn/index.js";
 import type { WhisperContext } from "whisper.rn/index.js";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 
 export interface WhisperModel {
   id: string;
@@ -90,6 +93,9 @@ interface ModelFileInfo {
   size: number;
 }
 
+// Keep awake tag for downloads
+const WHISPER_KEEP_AWAKE_TAG = "whisper-model-download";
+
 export function useWhisperModels() {
   const [modelFiles, setModelFiles] = useState<Record<string, ModelFileInfo>>(
     {}
@@ -104,6 +110,12 @@ export function useWhisperModels() {
   );
   const [vadContext, setVadContext] = useState<any>(null);
   const [currentModelId, setCurrentModelId] = useState<string | null>(null);
+  const [isDownloadPaused, setIsDownloadPaused] = useState(false);
+
+  // Download resumable reference for pause/resume support
+  const downloadResumableRef = useRef<DownloadResumable | null>(null);
+  const downloadPauseStateRef = useRef<DownloadPauseState | null>(null);
+  const currentDownloadModelRef = useRef<WhisperModel | null>(null);
 
   const getModelDirectory = useCallback(async () => {
     let documentDirectory: Directory;
@@ -177,34 +189,66 @@ export function useWhisperModels() {
       }
 
       setIsDownloading(true);
+      setIsDownloadPaused(false);
+      currentDownloadModelRef.current = model;
+
+      // Activate keep-awake to prevent screen sleep during download
+      try {
+        await activateKeepAwakeAsync(WHISPER_KEEP_AWAKE_TAG);
+        console.log("[WhisperModels] Keep-awake activated for download");
+      } catch (error) {
+        console.warn("[WhisperModels] Failed to activate keep-awake:", error);
+      }
+
       console.log(`Downloading model ${model.id} from ${model.url}`);
 
       try {
+        // Create resumable download with background session support
+        // expo-file-system uses BACKGROUND session type by default, which:
+        // - iOS: Uses NSURLSession background configuration - downloads continue when app is backgrounded or device locked
+        // - Android: Downloads continue in background as long as process isn't killed by the system
         const downloadResumable = createDownloadResumable(
           model.url,
           file.uri,
-          undefined,
+          {
+            // sessionType defaults to FileSystemSessionType.BACKGROUND (0)
+            // This allows downloads to continue in background and when device is locked
+          },
           (progressData: DownloadProgressData) => {
             const { totalBytesWritten, totalBytesExpectedToWrite } = progressData;
-            const fraction =
-              totalBytesExpectedToWrite > 0
-                ? totalBytesWritten / totalBytesExpectedToWrite
-                : 0;
+            // Calculate progress - if server doesn't send Content-Length, use expected size from model config
+            let fraction = 0;
+            if (totalBytesExpectedToWrite > 0) {
+              fraction = totalBytesWritten / totalBytesExpectedToWrite;
+            } else if (model.expectedSize > 0) {
+              // Fallback to expected size if Content-Length not provided
+              fraction = Math.min(1, totalBytesWritten / model.expectedSize);
+            }
             setDownloadProgress((prev) => ({
               ...prev,
               [model.id]: fraction,
             }));
             console.log(
-              `Download progress for ${model.id}: ${(fraction * 100).toFixed(
+              `[WhisperModels] Download progress for ${model.id}: ${(fraction * 100).toFixed(
                 1
-              )}%`
+              )}% (${(totalBytesWritten / 1024 / 1024).toFixed(1)}MB)`
             );
           },
         );
 
+        console.log("[WhisperModels] Download started with BACKGROUND session type - will continue in background/locked");
+
+        // Store reference for pause/resume
+        downloadResumableRef.current = downloadResumable;
+
         const downloadResult = (await downloadResumable.downloadAsync()) as
           | FileSystemDownloadResult
           | undefined;
+
+        // Clear the reference after download completes
+        downloadResumableRef.current = null;
+        downloadPauseStateRef.current = null;
+        currentDownloadModelRef.current = null;
 
         if (
           downloadResult &&
@@ -225,10 +269,58 @@ export function useWhisperModels() {
         throw error;
       } finally {
         setIsDownloading(false);
+        setIsDownloadPaused(false);
+        downloadResumableRef.current = null;
+        currentDownloadModelRef.current = null;
+
+        // Deactivate keep-awake
+        try {
+          deactivateKeepAwake(WHISPER_KEEP_AWAKE_TAG);
+          console.log("[WhisperModels] Keep-awake deactivated");
+        } catch (error) {
+          console.warn("[WhisperModels] Failed to deactivate keep-awake:", error);
+        }
       }
     },
     [getModelDirectory]
   );
+
+  // Manually pause the current download
+  const pauseDownload = useCallback(async (): Promise<boolean> => {
+    if (!downloadResumableRef.current || !isDownloading) {
+      console.warn("[WhisperModels] No active download to pause");
+      return false;
+    }
+
+    try {
+      const pauseState = await downloadResumableRef.current.pauseAsync();
+      downloadPauseStateRef.current = pauseState;
+      setIsDownloadPaused(true);
+      console.log("[WhisperModels] Download paused manually");
+      return true;
+    } catch (error) {
+      console.error("[WhisperModels] Failed to pause download:", error);
+      return false;
+    }
+  }, [isDownloading]);
+
+  // Resume a paused download
+  const resumeDownload = useCallback(async (): Promise<boolean> => {
+    if (!downloadResumableRef.current || !isDownloadPaused) {
+      console.warn("[WhisperModels] No paused download to resume");
+      return false;
+    }
+
+    try {
+      await downloadResumableRef.current.resumeAsync();
+      setIsDownloadPaused(false);
+      console.log("[WhisperModels] Download resumed");
+      return true;
+    } catch (error) {
+      console.error("[WhisperModels] Failed to resume download:", error);
+      return false;
+    }
+  }, [isDownloadPaused]);
 
   const initializeWhisperModel = useCallback(
     async (modelId: string, options?: { initVad?: boolean }) => {
@@ -443,6 +535,17 @@ export function useWhisperModels() {
     };
   }, [getModelDirectory]);
 
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      try {
+        deactivateKeepAwake(WHISPER_KEEP_AWAKE_TAG);
+      } catch {
+        // Ignore cleanup errors
+      }
+    };
+  }, []);
+
   return {
     // State
     modelFiles,
@@ -452,12 +555,15 @@ export function useWhisperModels() {
     whisperContext,
     vadContext,
     currentModelId,
+    isDownloadPaused,
 
     // Actions
     downloadModel,
     initializeWhisperModel,
     resetWhisperContext,
     deleteModel,
+    pauseDownload,
+    resumeDownload,
 
     // Helpers
     getModelById,

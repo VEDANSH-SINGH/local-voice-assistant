@@ -1,6 +1,14 @@
 import { Directory, File, Paths } from "expo-file-system"
+import {
+  createDownloadResumable,
+  type DownloadPauseState,
+  type DownloadProgressData,
+  type DownloadResumable,
+  type FileSystemDownloadResult,
+} from "expo-file-system/legacy"
 import { initLlama, LlamaContext } from "llama.rn"
 import { useCallback, useEffect, useRef, useState } from "react"
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake"
 
 // Model definitions with expected file sizes for validation
 export const LLAMA_MODELS = [
@@ -62,9 +70,18 @@ interface ModelFileInfo {
 // Directory name for llama models
 const LLAMA_DIRECTORY_NAME = "llama-models"
 
+// Keep awake tag for downloads
+const LLAMA_KEEP_AWAKE_TAG = "llama-model-download"
+
 export function useLlamaModels() {
   // Context reference
   const contextRef = useRef<LlamaContext | null>(null)
+
+  // Download resumable reference for pause/resume support
+  const downloadResumableRef = useRef<DownloadResumable | null>(null)
+  const downloadPauseStateRef = useRef<DownloadPauseState | null>(null)
+  const currentDownloadModelIdRef = useRef<string | null>(null)
+  const hasShownBackgroundAlertRef = useRef<boolean>(false)
 
   // State
   const [isInitializingModel, setIsInitializingModel] = useState(false)
@@ -78,6 +95,7 @@ export function useLlamaModels() {
   const [downloadProgress, setDownloadProgress] = useState<
     Record<string, number>
   >({})
+  const [isDownloadPaused, setIsDownloadPaused] = useState(false)
 
   // Get model directory
   const getModelDirectory = useCallback(async (): Promise<Directory> => {
@@ -87,6 +105,7 @@ export function useLlamaModels() {
     }
     return directory
   }, [])
+
 
   // Validate model file (check if it's complete/not corrupted)
   const validateModelFile = useCallback(
@@ -137,6 +156,7 @@ export function useLlamaModels() {
   }, [getModelDirectory, validateModelFile])
 
   // Download a model (with optional force re-download)
+  // Uses resumable download with background pause/resume support
   const downloadModel = useCallback(
     async (
       modelId: string,
@@ -152,6 +172,17 @@ export function useLlamaModels() {
         setIsDownloading(true)
         setDownloadProgress({ [modelId]: 0 })
         setLlamaError(null)
+        setIsDownloadPaused(false)
+        currentDownloadModelIdRef.current = modelId
+        hasShownBackgroundAlertRef.current = false
+
+        // Activate keep-awake to prevent screen sleep during download
+        try {
+          await activateKeepAwakeAsync(LLAMA_KEEP_AWAKE_TAG)
+          console.log("[LlamaModels] Keep-awake activated for download")
+        } catch (error) {
+          console.warn("[LlamaModels] Failed to activate keep-awake:", error)
+        }
 
         const modelDir = await getModelDirectory()
         const modelFile = new File(modelDir, `${modelId}.gguf`)
@@ -178,14 +209,57 @@ export function useLlamaModels() {
         console.log("Downloading model from:", model.url)
         console.log("Target path:", modelFile.uri)
 
-        await File.downloadFileAsync(model.url, modelFile, {
-          onProgress: (event) => {
-            const progress =
-              event.totalBytesWritten / event.totalBytesExpectedToWrite
-            setDownloadProgress({ [modelId]: progress })
-            console.log(`Download progress: ${(progress * 100).toFixed(1)}%`)
+        // Create resumable download with background session support
+        // expo-file-system uses BACKGROUND session type by default, which:
+        // - iOS: Uses NSURLSession background configuration - downloads continue when app is backgrounded or device locked
+        // - Android: Downloads continue in background as long as process isn't killed by the system
+        // The download will automatically resume if network is interrupted
+        const downloadResumable = createDownloadResumable(
+          model.url,
+          modelFile.uri,
+          {
+            // sessionType defaults to FileSystemSessionType.BACKGROUND (0)
+            // This allows downloads to continue in background and when device is locked
           },
-        })
+          (progressData: DownloadProgressData) => {
+            const { totalBytesWritten, totalBytesExpectedToWrite } = progressData
+            // Calculate progress - if server doesn't send Content-Length, use expected size from model config
+            let progress = 0
+            if (totalBytesExpectedToWrite > 0) {
+              progress = totalBytesWritten / totalBytesExpectedToWrite
+            } else if (model.expectedSizeBytes > 0) {
+              // Fallback to expected size if Content-Length not provided
+              progress = Math.min(1, totalBytesWritten / model.expectedSizeBytes)
+            }
+            setDownloadProgress({ [modelId]: progress })
+            console.log(`[LlamaModels] Download progress: ${(progress * 100).toFixed(1)}% (${(totalBytesWritten / 1024 / 1024).toFixed(1)}MB)`)
+          }
+        )
+        
+        console.log("[LlamaModels] Download started with BACKGROUND session type - will continue in background/locked")
+
+        // Store reference for pause/resume
+        downloadResumableRef.current = downloadResumable
+
+        // Start the download
+        const downloadResult = (await downloadResumable.downloadAsync()) as
+          | FileSystemDownloadResult
+          | undefined
+
+        // Clear the reference after download completes
+        downloadResumableRef.current = null
+        downloadPauseStateRef.current = null
+        currentDownloadModelIdRef.current = null
+
+        if (
+          !downloadResult ||
+          (downloadResult.status !== 0 &&
+            (downloadResult.status < 200 || downloadResult.status >= 300))
+        ) {
+          throw new Error(
+            `Download failed with status: ${downloadResult?.status}`
+          )
+        }
 
         console.log("Model download complete")
 
@@ -207,10 +281,58 @@ export function useLlamaModels() {
         return false
       } finally {
         setIsDownloading(false)
+        setIsDownloadPaused(false)
+        downloadResumableRef.current = null
+        currentDownloadModelIdRef.current = null
+
+        // Deactivate keep-awake
+        try {
+          deactivateKeepAwake(LLAMA_KEEP_AWAKE_TAG)
+          console.log("[LlamaModels] Keep-awake deactivated")
+        } catch (error) {
+          console.warn("[LlamaModels] Failed to deactivate keep-awake:", error)
+        }
       }
     },
     [getModelDirectory, refreshModelFiles, validateModelFile]
   )
+
+  // Manually pause the current download
+  const pauseDownload = useCallback(async (): Promise<boolean> => {
+    if (!downloadResumableRef.current || !isDownloading) {
+      console.warn("[LlamaModels] No active download to pause")
+      return false
+    }
+
+    try {
+      const pauseState = await downloadResumableRef.current.pauseAsync()
+      downloadPauseStateRef.current = pauseState
+      setIsDownloadPaused(true)
+      console.log("[LlamaModels] Download paused manually")
+      return true
+    } catch (error) {
+      console.error("[LlamaModels] Failed to pause download:", error)
+      return false
+    }
+  }, [isDownloading])
+
+  // Resume a paused download
+  const resumeDownload = useCallback(async (): Promise<boolean> => {
+    if (!downloadResumableRef.current || !isDownloadPaused) {
+      console.warn("[LlamaModels] No paused download to resume")
+      return false
+    }
+
+    try {
+      await downloadResumableRef.current.resumeAsync()
+      setIsDownloadPaused(false)
+      console.log("[LlamaModels] Download resumed")
+      return true
+    } catch (error) {
+      console.error("[LlamaModels] Failed to resume download:", error)
+      return false
+    }
+  }, [isDownloadPaused])
 
   // Initialize a model
   const initializeLlamaModel = useCallback(
@@ -527,6 +649,17 @@ export function useLlamaModels() {
     refreshModelFiles()
   }, [])
 
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      try {
+        deactivateKeepAwake(LLAMA_KEEP_AWAKE_TAG)
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  }, [])
+
   return {
     // State
     llamaContext: contextRef.current,
@@ -537,6 +670,7 @@ export function useLlamaModels() {
     modelFiles,
     llamaError,
     downloadProgress,
+    isDownloadPaused,
 
     // Actions
     initializeLlamaModel,
@@ -544,6 +678,8 @@ export function useLlamaModels() {
     releaseContext,
     deleteModel,
     completion,
+    pauseDownload,
+    resumeDownload,
 
     // Helpers
     getCurrentModel,
