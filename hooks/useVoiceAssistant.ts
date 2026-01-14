@@ -1245,37 +1245,21 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     ]
   )
 
-  // Track contexts in refs for cleanup (to avoid stale closures)
-  const whisperContextRef = useRef(whisper.whisperContext)
-  const llamaContextRef = useRef(llama.llamaContext)
-  
-  // Keep refs updated
-  useEffect(() => {
-    whisperContextRef.current = whisper.whisperContext
-  }, [whisper.whisperContext])
-  
-  useEffect(() => {
-    llamaContextRef.current = llama.llamaContext
-  }, [llama.llamaContext])
-
   // Cleanup on unmount - release all contexts to free GPU/memory resources
+  // Use the hooks' release methods to properly reset their internal state
   useEffect(() => {
     return () => {
       cancel()
-      // Release whisper context to prevent resource contention with other screens
-      if (whisperContextRef.current?.release) {
-        whisperContextRef.current.release().catch((e: any) => 
-          console.warn("Failed to release whisper context on unmount:", e)
-        )
-      }
-      // Release llama context
-      if (llamaContextRef.current?.release) {
-        llamaContextRef.current.release().catch((e: any) =>
-          console.warn("Failed to release llama context on unmount:", e)
-        )
-      }
+      // Release whisper context using the hook's method (properly resets state)
+      whisper.resetWhisperContext().catch((e: any) => 
+        console.warn("Failed to release whisper context on unmount:", e)
+      )
+      // Release llama context using the hook's method (properly resets state)
+      llama.releaseContext().catch((e: any) =>
+        console.warn("Failed to release llama context on unmount:", e)
+      )
     }
-  }, [])
+  }, [whisper.resetWhisperContext, llama.releaseContext])
 
   return {
     // State

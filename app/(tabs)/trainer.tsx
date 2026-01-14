@@ -3,7 +3,7 @@ import { useMeloTTS } from "@/hooks/useMeloTTS";
 import { useWhisperModels } from "@/hooks/useWhisperModels";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   ScrollView,
@@ -561,54 +561,67 @@ export default function TrainerScreen() {
     modelName: string;
   } | null>(null);
 
+  // Use refs to track previous values and avoid infinite loops
+  const prevDownloadStatusRef = useRef<{ type: string | null; progress: number }>({ type: null, progress: 0 });
+
+  // Extract progress values to avoid object reference issues
+  const whisperProgress = Object.values(whisper.downloadProgress)[0] || 0;
+  const llamaProgress = Object.values(llama.downloadProgress)[0] || 0;
+  const ttsProgress = tts.downloadProgress.models || 0;
+
   // Monitor download progress from all hooks
   useEffect(() => {
+    let newType: "whisper" | "llama" | "tts" | null = null;
+    let newProgress = 0;
+    let newModelName = "";
+
     // Check Whisper download
     if (whisper.isDownloading) {
-      const progress = Object.values(whisper.downloadProgress)[0] || 0;
+      newType = "whisper";
+      newProgress = whisperProgress;
       const modelId = Object.keys(whisper.downloadProgress)[0];
       const model = whisper.getModelById(modelId || "");
-      setDownloadStatus({
-        type: "whisper",
-        progress,
-        modelName: model?.label || "Speech Recognition",
-      });
-      return;
+      newModelName = model?.label || "Speech Recognition";
     }
-
     // Check LLM download
-    if (llama.isDownloading) {
-      const progress = Object.values(llama.downloadProgress)[0] || 0;
+    else if (llama.isDownloading) {
+      newType = "llama";
+      newProgress = llamaProgress;
       const modelId = Object.keys(llama.downloadProgress)[0];
       const model = llama.getModelById(modelId || "");
-      setDownloadStatus({
-        type: "llama",
-        progress,
-        modelName: model?.label || "AI Model",
-      });
-      return;
+      newModelName = model?.label || "AI Model";
     }
-
     // Check TTS download
-    if (tts.isDownloading) {
-      const progress = tts.downloadProgress.models || 0;
-      setDownloadStatus({
-        type: "tts",
-        progress,
-        modelName: `TTS (${tts.currentModelSource})`,
-      });
-      return;
+    else if (tts.isDownloading) {
+      newType = "tts";
+      newProgress = ttsProgress;
+      newModelName = `TTS (${tts.currentModelSource})`;
     }
 
-    // No active download
-    setDownloadStatus(null);
+    // Only update state if something actually changed
+    const prev = prevDownloadStatusRef.current;
+    const hasChanged = prev.type !== newType || Math.abs(prev.progress - newProgress) > 0.01;
+
+    if (hasChanged) {
+      prevDownloadStatusRef.current = { type: newType, progress: newProgress };
+      
+      if (newType) {
+        setDownloadStatus({
+          type: newType,
+          progress: newProgress,
+          modelName: newModelName,
+        });
+      } else {
+        setDownloadStatus(null);
+      }
+    }
   }, [
     whisper.isDownloading,
-    whisper.downloadProgress,
+    whisperProgress,
     llama.isDownloading,
-    llama.downloadProgress,
+    llamaProgress,
     tts.isDownloading,
-    tts.downloadProgress,
+    ttsProgress,
     tts.currentModelSource,
   ]);
 
@@ -619,28 +632,16 @@ export default function TrainerScreen() {
   const allModelsReady = isWhisperReady && isLlamaReady && isTTSReady;
 
   // Check if models are downloaded (file exists) but not initialized
-  const [whisperDownloaded, setWhisperDownloaded] = useState(false);
-  const [llamaDownloaded, setLlamaDownloaded] = useState(false);
-  const [ttsDownloaded, setTtsDownloaded] = useState(false);
+  // Derive these from the hooks directly to avoid state sync issues
+  const whisperModelCount = Object.keys(whisper.modelFiles).length;
+  const llamaModelCount = Object.keys(llama.modelFiles).length;
+  const ttsBertDownloaded = tts.downloadedSources.bert;
+  const ttsDefaultDownloaded = tts.downloadedSources.default;
 
-  // Check downloaded status on mount
-  useEffect(() => {
-    const checkDownloaded = async () => {
-      // Check whisper
-      const hasWhisper = Object.keys(whisper.modelFiles).length > 0 || 
-        whisper.isModelDownloaded("base") || whisper.isModelDownloaded("tiny");
-      setWhisperDownloaded(hasWhisper);
-      
-      // Check llama
-      const hasLlama = Object.keys(llama.modelFiles).length > 0;
-      setLlamaDownloaded(hasLlama);
-      
-      // Check TTS
-      const hasTts = tts.downloadedSources.bert || tts.downloadedSources.default;
-      setTtsDownloaded(hasTts);
-    };
-    checkDownloaded();
-  }, [whisper.modelFiles, llama.modelFiles, tts.downloadedSources]);
+  const whisperDownloaded = whisperModelCount > 0 || 
+    whisper.isModelDownloaded("base") || whisper.isModelDownloaded("tiny");
+  const llamaDownloaded = llamaModelCount > 0;
+  const ttsDownloaded = ttsBertDownloaded || ttsDefaultDownloaded;
 
   // Check if any model is initializing (not downloading)
   const isInitializing = 
