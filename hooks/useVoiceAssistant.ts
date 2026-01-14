@@ -10,7 +10,7 @@
  */
 import AudioModule from "expo-audio/build/AudioModule"
 import { File } from "expo-file-system"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ChatMessage, useLlamaModels } from "./useLlamaModels"
 import { useMeloTTS, type ModelSource } from "./useMeloTTS"
 import { useWhisperModels } from "./useWhisperModels"
@@ -95,8 +95,27 @@ const SPLIT_CONJUNCTIONS =
 // Minimum words per phrase
 const MIN_WORDS_PER_PHRASE = 6
 
-export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
-  const mergedConfig = { ...DEFAULT_CONFIG, ...config }
+// Dependencies interface for dependency injection
+export interface VoiceAssistantDeps {
+  whisper?: ReturnType<typeof useWhisperModels>;
+  llama?: ReturnType<typeof useLlamaModels>;
+  tts?: ReturnType<typeof useMeloTTS>;
+}
+
+export function useVoiceAssistant(config: VoiceAssistantConfig = {}, deps: VoiceAssistantDeps = {}) {
+  // Memoize mergedConfig to prevent unstable dependency in effects
+  const mergedConfig = useMemo(() => ({ ...DEFAULT_CONFIG, ...config }), [
+    config.systemPrompt,
+    config.minSentenceLength,
+    config.maxConcurrentSynthesis,
+    config.ttsSpeed,
+    config.ttsNaturalness,
+    config.ttsNoiseScaleW,
+    config.playbackRate,
+    config.ttsModelSource,
+    config.llamaModel,
+    config.whisperModel
+  ])
 
   // Pipeline state
   const [pipelineState, setPipelineState] = useState<PipelineState>("idle")
@@ -133,31 +152,54 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
   const processedSentencesRef = useRef<Set<string>>(new Set())
   const queueIdCounterRef = useRef<number>(0)
 
-  // Hooks
-  const whisper = useWhisperModels()
-  const llama = useLlamaModels()
-  const tts = useMeloTTS()
+  // Hooks - use injected dependencies or create new instances
+  const defaultWhisper = useWhisperModels()
+  const defaultLlama = useLlamaModels()
+  const defaultTts = useMeloTTS()
+  
+  const whisper = deps.whisper || defaultWhisper
+  const llama = deps.llama || defaultLlama
+  const tts = deps.tts || defaultTts
+
+  // Destructure stable members from hooks to prevent infinite loops
+  // The hooks return new objects on every render, so we must destructure 
+  // the specific stable functions/values we need for dependency arrays
+  const { whisperContext, initializeWhisperModel, isInitializingModel: isWhisperInitializing } = whisper;
+  const { llamaContext, initializeLlamaModel, releaseContext, completion, isInitializingModel: isLlamaInitializing } = llama;
+  const { 
+    isReady: ttsIsReady, 
+    getCurrentModel: ttsGetCurrentModel, 
+    getModelDirectory: ttsGetModelDirectory, 
+    synthesizeToFile: ttsSynthesizeToFile, 
+    switchModelSource: ttsSwitchModelSource, 
+    initializeModel: ttsInitializeModel, 
+    currentModelSource: ttsCurrentModelSource,
+    isInitializingModel: isTtsInitializing,
+    stopAudio: ttsStopAudio
+  } = tts;
 
   // Check if all models are ready
   const isReady = useCallback(() => {
     return (
-      whisper.whisperContext !== null &&
-      llama.llamaContext !== null &&
-      tts.isReady()
+      whisperContext !== null &&
+      llamaContext !== null &&
+      ttsIsReady()
     )
-  }, [whisper.whisperContext, llama.llamaContext, tts])
+  }, [whisperContext, llamaContext, ttsIsReady])
 
   // Get initialization status
   const getInitStatus = useCallback(() => {
+    // We can't access getCurrentModel safely in dep array as it might be unstable
+    // but these getters are just for UI display
     return {
-      whisper: whisper.whisperContext !== null,
-      llama: llama.llamaContext !== null,
-      tts: tts.isReady(),
+      whisper: whisperContext !== null,
+      llama: llamaContext !== null,
+      tts: ttsIsReady(),
       whisperModel: whisper.getCurrentModel()?.label || "Not loaded",
       llamaModel: llama.getCurrentModel()?.label || "Not loaded",
       ttsModel: tts.getCurrentModel()?.label || "Not loaded",
     }
-  }, [whisper, llama, tts])
+  }, [whisperContext, llamaContext, ttsIsReady, whisper, llama, tts])
 
   // Initialize all models
   const initializeAll = useCallback(
@@ -171,24 +213,24 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
 
       try {
         // Initialize Whisper
-        if (!whisper.whisperContext) {
+        if (!whisperContext) {
           const whisperModelId =
             options?.whisperModel || mergedConfig.whisperModel || "tiny"
           tLog(`Initializing Whisper with model: ${whisperModelId}...`)
-          await whisper.initializeWhisperModel(whisperModelId)
+          await initializeWhisperModel(whisperModelId)
         }
 
         // Initialize Llama
-        if (!llama.llamaContext) {
+        if (!llamaContext) {
           const llamaModelId =
             options?.llamaModel || mergedConfig.llamaModel || "gemma-2b-it"
           tLog(`Initializing Llama with model: ${llamaModelId}...`)
-          await llama.initializeLlamaModel(llamaModelId, {})
+          await initializeLlamaModel(llamaModelId, {})
         }
 
         // Initialize TTS (use FP32 - RTF ~0.9)
-        const ttsAlreadyReady = tts.isReady()
-        const currentModel = tts.getCurrentModel()
+        const ttsAlreadyReady = ttsIsReady()
+        const currentModel = ttsGetCurrentModel()
         const ttsSource = mergedConfig.ttsModelSource || "default"
         tLog(
           `TTS Status: ready=${ttsAlreadyReady}, currentModel=${
@@ -199,9 +241,9 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         if (!ttsAlreadyReady) {
           tLog("Initializing TTS...")
           // Switch to the selected source (downloads if needed)
-          await tts.switchModelSource(ttsSource)
+          await ttsSwitchModelSource(ttsSource)
 
-          // Now refresh and check models
+          // Now refresh and check models - using direct tts ref here as it's an action
           const models = await tts.refreshModelFiles(ttsSource)
           tLog("Available TTS models:", Object.keys(models))
 
@@ -210,21 +252,21 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
           tLog(
             `Loading TTS model: ${availableTtsModel} from source: ${ttsSource}`
           )
-          await tts.initializeModel(availableTtsModel, ttsSource)
+          await ttsInitializeModel(availableTtsModel, ttsSource)
           tLog(
             `TTS initialized with: ${tts.getCurrentModel()?.id || "unknown"}`
           )
         } else {
           // Check if we need to switch sources
-          if (tts.currentModelSource !== ttsSource) {
+          if (ttsCurrentModelSource !== ttsSource) {
             tLog(
-              `Switching TTS source from ${tts.currentModelSource} to ${ttsSource}...`
+              `Switching TTS source from ${ttsCurrentModelSource} to ${ttsSource}...`
             )
-            await tts.switchModelSource(ttsSource)
+            await ttsSwitchModelSource(ttsSource)
             // Use BERT model for bert source, FP32 for others
             const availableTtsModel = options?.ttsModel || (ttsSource === "bert" ? "melo-bert" : "melo-fp32")
             // Pass source explicitly to avoid state timing issues
-            await tts.initializeModel(availableTtsModel, ttsSource)
+            await ttsInitializeModel(availableTtsModel, ttsSource)
             tLog(
               `TTS re-initialized with: ${
                 tts.getCurrentModel()?.id || "unknown"
@@ -244,7 +286,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         return false
       }
     },
-    [whisper, llama, tts, mergedConfig.ttsModelSource]
+    [whisperContext, llamaContext, ttsIsReady, ttsCurrentModelSource, initializeWhisperModel, initializeLlamaModel, ttsSwitchModelSource, ttsInitializeModel, mergedConfig.whisperModel, mergedConfig.llamaModel, mergedConfig.ttsModelSource, tts]
   )
 
   // Switch TTS source at runtime (downloads if needed, then re-initializes)
@@ -260,13 +302,13 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         tLog(`Switching TTS source to: ${newSource}`)
 
         // Switch model source (downloads if needed)
-        await tts.switchModelSource(newSource)
+        await ttsSwitchModelSource(newSource)
 
         // Re-initialize with appropriate model from the new source
         // BERT source uses melo-bert, others use melo-fp32
         const modelToUse = newSource === "bert" ? "melo-bert" : "melo-fp32"
         // Pass the source explicitly to avoid state timing issues
-        await tts.initializeModel(modelToUse, newSource)
+        await ttsInitializeModel(modelToUse, newSource)
 
         tLog(
           `TTS switched to ${newSource} with model: ${
@@ -281,7 +323,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         return false
       }
     },
-    [tts, pipelineState]
+    [ttsSwitchModelSource, ttsInitializeModel, tts, pipelineState]
   )
 
   // Switch LLM model at runtime (downloads if needed, then re-initializes)
@@ -297,12 +339,12 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         tLog(`Switching LLM model to: ${modelId}...`)
 
         // Release existing context first
-        if (llama.llamaContext) {
-          await llama.releaseContext()
+        if (llamaContext) {
+          await releaseContext()
         }
 
         // Initialize the new model (downloads if needed)
-        await llama.initializeLlamaModel(modelId, {})
+        await initializeLlamaModel(modelId, {})
 
         tLog(`LLM switched to: ${llama.getCurrentModel()?.label || modelId}`)
         return true
@@ -313,7 +355,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         return false
       }
     },
-    [llama, pipelineState]
+    [llamaContext, releaseContext, initializeLlamaModel, llama, pipelineState]
   )
 
   // Helper to count words in text
@@ -493,15 +535,15 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
           } (${currentTTSModel?.id || "no-id"})`
         )
         tLog(`🔊 Text: "${item.text.substring(0, 30)}..."`)
-        tLog(`🔊 TTS Ready: ${tts.isReady()}`)
+        tLog(`🔊 TTS Ready: ${ttsIsReady()}`)
 
         // Get TTS directory
-        const directory = await tts.getModelDirectory()
+        const directory = await ttsGetModelDirectory()
         const outputPath = new File(directory, `voice_${item.id}.wav`).uri
 
         // Synthesize - now returns actual audio duration
         const startTime = Date.now()
-        const { audioDuration } = await tts.synthesizeToFile(item.text, outputPath, {
+        const { audioDuration } = await ttsSynthesizeToFile(item.text, outputPath, {
           lengthScale: mergedConfig.ttsSpeed,
           noiseScale: mergedConfig.ttsNaturalness,
           noiseScaleW: mergedConfig.ttsNoiseScaleW,
@@ -536,7 +578,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         return null
       }
     },
-    [tts, mergedConfig]
+    [ttsIsReady, ttsGetModelDirectory, ttsSynthesizeToFile, mergedConfig, tts]
   )
 
   // Estimate audio duration from text (more reliable than synthesis time)
@@ -886,7 +928,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
 
   // Start listening for voice input
   const startListening = useCallback(async () => {
-    if (!whisper.whisperContext) {
+    if (!whisperContext) {
       setError("Whisper not initialized")
       return false
     }
@@ -907,7 +949,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       tLog("🎤 Starting voice input...")
 
       const { stop, subscribe } =
-        await whisper.whisperContext.transcribeRealtime({
+        await whisperContext.transcribeRealtime({
           language: "en",
           realtimeAudioSec: 300,  // 5 minutes session (matches Whisper demo tab)
           realtimeAudioSliceSec: 10,  // Increased from 5 to 10 for better transcription quality (more context per chunk)
@@ -940,7 +982,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       setPipelineState("error")
       return false
     }
-  }, [whisper.whisperContext])
+  }, [whisperContext])
 
   // Stop listening and process the transcription
   const stopListeningAndProcess = useCallback(async () => {
@@ -987,7 +1029,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       tLog("🤖 Starting LLM completion...")
       setPipelineState("speaking") // Transition to speaking as we'll start TTS soon
 
-      const response = await llama.completion(messages, handleLLMToken)
+      const response = await completion(messages, handleLLMToken)
 
       // Handle completion
       handleLLMComplete()
@@ -1009,7 +1051,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
   }, [
     currentTranscription,
     conversationHistory,
-    llama,
+    completion,
     mergedConfig.systemPrompt,
     handleLLMToken,
     handleLLMComplete,
@@ -1067,7 +1109,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         tLog("🤖 Starting LLM completion...")
         setPipelineState("speaking")
 
-        const response = await llama.completion(messages, handleLLMToken)
+        const response = await completion(messages, handleLLMToken)
 
         // Handle completion
         handleLLMComplete()
@@ -1090,7 +1132,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     [
       pipelineState,
       conversationHistory,
-      llama,
+      completion,
       mergedConfig.systemPrompt,
       handleLLMToken,
       handleLLMComplete,
@@ -1129,7 +1171,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     audioPlayersRef.current.clear()
 
     // Stop TTS
-    tts.stopAudio()
+    ttsStopAudio()
 
     // Reset state
     setPipelineState("idle")
@@ -1139,7 +1181,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     setCurrentPlayingId(null)
 
     console.log("🛑 Pipeline cancelled")
-  }, [tts])
+  }, [ttsStopAudio])
 
   // Clear conversation history
   const clearHistory = useCallback(() => {
@@ -1152,7 +1194,7 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
   // Synthesize and play a single phrase (for initial greetings, etc.)
   const synthesizeAndPlay = useCallback(
     async (text: string): Promise<void> => {
-      if (!tts.isReady()) {
+      if (!ttsIsReady()) {
         throw new Error("TTS not ready")
       }
 
@@ -1163,14 +1205,14 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
         setPipelineState("speaking")
 
         // Get TTS directory and create output path
-        const directory = await tts.getModelDirectory()
+        const directory = await ttsGetModelDirectory()
         const outputPath = new File(
           directory,
           `voice_greeting_${Date.now()}.wav`
         ).uri
 
         // Synthesize - now returns actual audio duration
-        const { audioDuration } = await tts.synthesizeToFile(cleanedText, outputPath, {
+        const { audioDuration } = await ttsSynthesizeToFile(cleanedText, outputPath, {
           lengthScale: mergedConfig.ttsSpeed,
           noiseScale: mergedConfig.ttsNaturalness,
           noiseScaleW: mergedConfig.ttsNoiseScaleW,
@@ -1236,7 +1278,9 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
       }
     },
     [
-      tts,
+      ttsIsReady,
+      ttsGetModelDirectory,
+      ttsSynthesizeToFile,
       cleanTextForTTS,
       mergedConfig.ttsSpeed,
       mergedConfig.ttsNaturalness,
@@ -1270,9 +1314,9 @@ export function useVoiceAssistant(config: VoiceAssistantConfig = {}) {
     getInitStatus,
 
     // Model loading states
-    isWhisperLoading: whisper.isInitializingModel || whisper.isDownloading,
-    isLlamaLoading: llama.isInitializingModel || llama.isDownloading,
-    isTTSLoading: tts.isInitializingModel || tts.isDownloading,
+    isWhisperLoading: isWhisperInitializing,
+    isLlamaLoading: isLlamaInitializing,
+    isTTSLoading: isTtsInitializing,
 
     // Actions
     initializeAll,

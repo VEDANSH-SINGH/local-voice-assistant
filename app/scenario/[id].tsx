@@ -1,11 +1,10 @@
 import { useVoiceAssistantContext, type PipelineState } from "@/hooks/VoiceAssistantContext";
 import { type ChatMessage } from "@/hooks/useLlamaModels";
+import { useVoiceAssistant } from "@/hooks/useVoiceAssistant";
 import {
   getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
 } from "expo-audio";
-import AudioModule from "expo-audio/build/AudioModule";
-import { File } from "expo-file-system";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -54,8 +53,8 @@ interface Feedback {
 }
 
 // Scenario-specific feedback prompts from scenario-readme.md
-// Each prompt is designed for the specific scenario context
 const FEEDBACK_PROMPTS: Record<string, { promptTemplate: string; roleLabels: { user: string; assistant: string } }> = {
+  // ... (keeping existing prompts, they are long and static)
   "introduce-yourself": {
     roleLabels: { user: "Employee", assistant: "Director" },
     promptTemplate: `You are a communication coach giving direct feedback to someone who just introduced themselves to a Director.
@@ -318,13 +317,37 @@ export default function ScenarioScreen() {
     whisper,
     llama,
     tts,
-    initializeAll,
-    isReady,
+    isReady: isContextReady,
     isWhisperLoading,
     isLlamaLoading,
     isTTSLoading,
     isInitializing: contextInitializing,
   } = useVoiceAssistantContext();
+
+  const systemPrompt = params.systemPrompt || "You are a helpful assistant.";
+
+  // Use the voice assistant hook for conversation logic with shared dependencies
+  const {
+    pipelineState,
+    error,
+    currentTranscription,
+    llmResponse,
+    conversationHistory,
+    isReady,
+    initializeAll,
+    startListening,
+    stopListeningAndProcess,
+    cancel,
+    synthesizeAndPlay,
+  } = useVoiceAssistant(
+    {
+      systemPrompt,
+      ttsModelSource: "bert", // Use BERT model for best prosody in scenarios
+      llamaModel: "gemma-2b-it",
+      whisperModel: "base",
+    },
+    { whisper, llama, tts }
+  );
 
   // Prep screen state - show context before starting conversation
   const [showPrepScreen, setShowPrepScreen] = useState(true);
@@ -334,13 +357,6 @@ export default function ScenarioScreen() {
   // Derived values
   const userInitiates = params.userInitiates === "true";
 
-  // Pipeline state (local to this scenario)
-  const [pipelineState, setPipelineState] = useState<PipelineState>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [currentTranscription, setCurrentTranscription] = useState<string>("");
-  const [llmResponse, setLlmResponse] = useState<string>("");
-  const [conversationHistory, setConversationHistory] = useState<ChatMessage[]>([]);
-
   // Feedback states
   const [isConversationComplete, setIsConversationComplete] = useState(false);
   const [isGeneratingFeedback, setIsGeneratingFeedback] = useState(false);
@@ -349,124 +365,22 @@ export default function ScenarioScreen() {
   const conversationCompletedRef = useRef(false);
   const wasPlayingRef = useRef(false);
   
-  // Refs for audio and transcription
-  const currentTranscriberRef = useRef<any>(null);
-  const audioPlayerRef = useRef<any>(null);
-  
-  // System prompt for this scenario
-  const systemPrompt = params.systemPrompt || "You are a helpful assistant.";
-
   const scrollViewRef = useRef<ScrollView>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const waveAnim = useRef(new Animated.Value(0)).current;
-
-  // Clean text for TTS - remove non-English characters and normalize
-  const cleanTextForTTS = useCallback((text: string): string => {
-    let cleaned = text.replace(/<[^>]+\/?>/g, "");
-    cleaned = cleaned.replace(/[^\x00-\x7F]/g, " ");
-    cleaned = cleaned.replace(/\.{2,}/g, ",");
-    cleaned = cleaned.replace(/\s+/g, " ").trim();
-    cleaned = cleaned.replace(/[\x00-\x1F\x7F]/g, "");
-    cleaned = cleaned.replace(/[,;:]$/, ".");
-    if (cleaned.length > 0 && !/[.!?]$/.test(cleaned)) {
-      cleaned += ".";
-    }
-    return cleaned;
-  }, []);
-
-  // Synthesize and play audio
-  const synthesizeAndPlay = useCallback(
-    async (text: string): Promise<void> => {
-      if (!tts.isReady()) {
-        throw new Error("TTS not ready");
-      }
-
-      const cleanedText = cleanTextForTTS(text);
-      if (cleanedText.length < 3) return;
-
-      try {
-        setPipelineState("speaking");
-
-        const directory = await tts.getModelDirectory();
-        const outputPath = new File(directory, `voice_scenario_${Date.now()}.wav`).uri;
-
-        const { audioDuration } = await tts.synthesizeToFile(cleanedText, outputPath, {
-          lengthScale: 1.0,
-          noiseScale: 0.6,
-          noiseScaleW: 0.8,
-        });
-
-        const player = new AudioModule.AudioPlayer({ uri: outputPath }, 100, false);
-        audioPlayerRef.current = player;
-        player.play();
-
-        let duration = audioDuration;
-        if (!duration || duration <= 0) {
-          await new Promise((r) => setTimeout(r, 50));
-          duration = player.duration;
-        }
-        if (!duration || duration <= 0) {
-          const wordCount = cleanedText.trim().split(/\s+/).length;
-          duration = Math.max(0.5, wordCount / 2.5);
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, duration * 1000 + 300));
-
-        player.remove();
-        audioPlayerRef.current = null;
-
-        try {
-          const file = new File(outputPath);
-          if (file.exists) file.delete();
-        } catch (e) {}
-
-        setPipelineState("idle");
-      } catch (err) {
-        console.error("synthesizeAndPlay error:", err);
-        setPipelineState("idle");
-        throw err;
-      }
-    },
-    [tts, cleanTextForTTS]
-  );
-
-  // Cancel current operation
-  const cancel = useCallback(async () => {
-    if (currentTranscriberRef.current?.stop) {
-      try {
-        await currentTranscriberRef.current.stop();
-      } catch (e) {}
-      currentTranscriberRef.current = null;
-    }
-
-    if (audioPlayerRef.current) {
-      try {
-        audioPlayerRef.current.pause();
-        audioPlayerRef.current.remove();
-      } catch (e) {}
-      audioPlayerRef.current = null;
-    }
-
-    tts.stopAudio();
-    setPipelineState("idle");
-    setCurrentTranscription("");
-    setLlmResponse("");
-  }, [tts]);
 
   // Handle "I am ready" button press
   const handleStartConversation = async () => {
     setShowPrepScreen(false);
     setIsInitializing(true);
     try {
-      // Use shared initialization - models stay loaded across scenarios
+      // Initialize using the hook (reuses shared context models if available)
       await initializeAll({
         whisperModel: "base",
         llamaModel: "gemma-2b-it",
-        ttsModelSource: "bert",
       });
     } catch (err) {
       console.error("Initialization failed:", err);
-      setError(`Initialization failed: ${err}`);
     } finally {
       setIsInitializing(false);
     }
@@ -701,116 +615,6 @@ Analyze and provide feedback directly to "you" in JSON format:
     }
   };
 
-  // Start listening for voice input
-  const startListening = useCallback(async () => {
-    if (!whisper.whisperContext) {
-      setError("Whisper not initialized");
-      return false;
-    }
-
-    try {
-      setError(null);
-      setPipelineState("listening");
-      setCurrentTranscription("");
-      setLlmResponse("");
-
-      console.log("🎤 Starting voice input...");
-
-      const { stop, subscribe } = await whisper.whisperContext.transcribeRealtime({
-        language: "en",
-        realtimeAudioSec: 300,
-        realtimeAudioSliceSec: 10,
-        realtimeAudioMinSec: 1,
-        audioSessionOnStartIos: {
-          category: "PlayAndRecord" as any,
-          options: ["MixWithOthers" as any],
-          mode: "Default" as any,
-        },
-        audioSessionOnStopIos: "restore" as any,
-      });
-
-      currentTranscriberRef.current = { stop };
-
-      subscribe((event: any) => {
-        const { data } = event;
-        if (data?.result) {
-          const transcript = data.result.trim();
-          setCurrentTranscription(transcript);
-          console.log(`📝 Transcription: ${transcript}`);
-        }
-      });
-
-      return true;
-    } catch (err) {
-      console.error("Failed to start listening:", err);
-      setError(`Failed to start listening: ${err}`);
-      setPipelineState("error");
-      return false;
-    }
-  }, [whisper.whisperContext]);
-
-  // Stop listening and process with LLM
-  const stopListeningAndProcess = useCallback(async () => {
-    try {
-      // Stop transcription
-      if (currentTranscriberRef.current?.stop) {
-        await currentTranscriberRef.current.stop();
-        currentTranscriberRef.current = null;
-      }
-
-      const finalText = currentTranscription.trim();
-
-      if (!finalText) {
-        console.log("No transcription captured");
-        setPipelineState("idle");
-        return;
-      }
-
-      console.log(`🎯 Final transcription: "${finalText}"`);
-
-      // Transition to thinking state
-      setPipelineState("thinking");
-
-      // Add user message to history
-      const userMessage: ChatMessage = { role: "user", content: finalText };
-      const newHistory = [...conversationHistory, userMessage];
-      setConversationHistory(newHistory);
-
-      // Build messages for LLM (system prompt + conversation)
-      const messages: ChatMessage[] = [
-        { role: "user", content: systemPrompt },
-        ...newHistory,
-      ];
-
-      // Start LLM completion
-      console.log("🤖 Starting LLM completion...");
-      let fullResponse = "";
-      
-      const response = await llama.completion(messages, (token: string) => {
-        fullResponse += token;
-        setLlmResponse(fullResponse);
-      });
-
-      // Add assistant response to history
-      const assistantMessage: ChatMessage = { role: "assistant", content: response };
-      setConversationHistory((prev) => [...prev, assistantMessage]);
-
-      // Speak the response
-      setPipelineState("speaking");
-      const cleanedResponse = response.replace(/<conv_completed\/?>/g, "").trim();
-      if (cleanedResponse.length > 0) {
-        await synthesizeAndPlay(cleanedResponse);
-      }
-      
-      setPipelineState("idle");
-      console.log("✅ LLM response complete");
-    } catch (err) {
-      console.error("Processing failed:", err);
-      setError(`Processing failed: ${err}`);
-      setPipelineState("error");
-    }
-  }, [currentTranscription, conversationHistory, llama, systemPrompt, synthesizeAndPlay]);
-
   const handleMicPress = async () => {
     // Don't allow mic press if conversation is complete
     if (isConversationComplete) return;
@@ -846,7 +650,8 @@ Analyze and provide feedback directly to "you" in JSON format:
     setHasPlayedInitial(false);
     conversationCompletedRef.current = false;
     wasPlayingRef.current = false;
-    // Note: conversation history is in the hook and would need a reset function
+    // Note: conversation history is in the hook and can be cleared if exposed, but 
+    // simply navigating back and returning will reset it as the hook is re-initialized.
     router.back();
   };
 
